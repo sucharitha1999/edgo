@@ -179,7 +179,7 @@ def telegram_webhook():
     return "ok"
 
 # --- SET WEBHOOK ON START ---
-@app.before_first_request
+@app.before_request
 def set_webhook():
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={WEBHOOK_URL}"
     res = requests.get(url)
