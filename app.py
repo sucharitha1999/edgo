@@ -11,6 +11,8 @@ load_dotenv()
 # API Keys
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # must be set on Render
+
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 # Cohere Client
@@ -49,6 +51,7 @@ def call_cohere(prompt, max_tokens=1000, temperature=0.7):
         print("❌ Cohere error:", e)
         return None
 
+# Telegram Webhook Endpoint
 @app.route("/webhook", methods=["POST"])
 def telegram_webhook():
     data = request.get_json()
@@ -175,5 +178,13 @@ def telegram_webhook():
     send_message(chat_id, "Say 'hi edgo' to get started. 😊")
     return "ok"
 
+# --- SET WEBHOOK ON START ---
+@app.before_first_request
+def set_webhook():
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={WEBHOOK_URL}"
+    res = requests.get(url)
+    print("🔗 Webhook set:", res.json())
+
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))  # Render sets PORT env var
+    app.run(host="0.0.0.0", port=port)
