@@ -21,13 +21,15 @@ co = cohere.Client(COHERE_API_KEY)
 # Session state for users
 user_state = {}
 
-# Utility: Send message to Telegram
+# -------------------- Utilities --------------------
+
 def send_message(chat_id, text):
+    """Send message to Telegram"""
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
     requests.post(TELEGRAM_API_URL, json=payload)
 
-# Utility: Split long messages
 def split_message(text, chunk_size=1400):
+    """Split long responses so Telegram accepts them"""
     parts = []
     while len(text) > chunk_size:
         split_index = text.rfind("\n\n", 0, chunk_size)
@@ -37,8 +39,8 @@ def split_message(text, chunk_size=1400):
     parts.append(text)
     return parts
 
-# Utility: Generate response using Cohere
 def call_cohere(prompt, max_tokens=1000, temperature=0.7):
+    """Call Cohere API"""
     try:
         response = co.generate(
             model="command-r-plus",
@@ -51,7 +53,12 @@ def call_cohere(prompt, max_tokens=1000, temperature=0.7):
         print("❌ Cohere error:", e)
         return None
 
-# Telegram Webhook Endpoint
+# -------------------- Routes --------------------
+
+@app.route("/")
+def home():
+    return "🚀 Telegram bot is running!"
+
 @app.route("/webhook", methods=["POST"])
 def telegram_webhook():
     data = request.get_json()
@@ -112,10 +119,9 @@ def telegram_webhook():
             f"The learner's education level is {state['education']} and they can study for {state['hours']} per day.\n\n"
             "Create a **1-month learning roadmap**, broken into **4 weekly sections**.\n"
             "Use emojis to make it engaging and visually clear.\n"
-            "Format using **Markdown** (e.g., headings, bullet points).\n"
-            "Keep explanations simple, warm, and motivating — like you're guiding a friend.\n"
-            "Make each week's tasks specific and achievable in daily sessions.\n"
-            "At the end, suggest 2–3 resources (courses, YouTube channels, or books) for continued learning.\n"
+            "Format using **Markdown**.\n"
+            "Keep explanations simple, warm, and motivating.\n"
+            "At the end, suggest 2–3 resources for continued learning.\n"
             "Keep the full response concise — under 800 words."
         )
 
@@ -178,13 +184,15 @@ def telegram_webhook():
     send_message(chat_id, "Say 'hi edgo' to get started. 😊")
     return "ok"
 
-# --- SET WEBHOOK ON START ---
-@app.before_request
+# -------------------- Webhook Setup --------------------
+
 def set_webhook():
+    """Set Telegram webhook only once when app starts"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={WEBHOOK_URL}"
     res = requests.get(url)
     print("🔗 Webhook set:", res.json())
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))  # Render sets PORT env var
+    set_webhook()
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
