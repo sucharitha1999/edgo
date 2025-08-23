@@ -1,22 +1,23 @@
 from flask import Flask, request
 import requests
-import cohere
 import os
 from dotenv import load_dotenv
+import json
+import time
 
 app = Flask(__name__)
 
 load_dotenv()
 
 # API Keys
-COHERE_API_KEY = os.getenv("COHERE_API_KEY")
+# You will need to provide a Gemini API key in your .env file
+# as the 'gemini' model is not provided by the Canvas environment directly.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # must be set on Render
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-# Cohere Client
-co = cohere.Client(COHERE_API_KEY)
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent"
 
 # Session state for users
 user_state = {}
@@ -39,18 +40,49 @@ def split_message(text, chunk_size=1400):
     parts.append(text)
     return parts
 
-def call_cohere(prompt, max_tokens=1000, temperature=0.7):
-    """Call Cohere API"""
+def call_gemini(prompt):
+    """Call Gemini API with exponential backoff for retries"""
     try:
-        response = co.generate(
-            model="command-r-plus",
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature
-        )
-        return response.generations[0].text.strip()
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt}]
+                }
+            ]
+        }
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        retries = 0
+        max_retries = 3
+        while retries < max_retries:
+            response = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, data=json.dumps(payload))
+            if response.status_code == 429: # Too Many Requests
+                delay = 2**retries
+                print(f"Rate limit exceeded. Retrying in {delay} seconds...")
+                time.sleep(delay)
+                retries += 1
+            else:
+                response.raise_for_status() # Raise an error for bad status codes
+                break
+        
+        if retries == max_retries:
+            print("❌ Max retries reached. Giving up.")
+            return None
+
+        result = response.json()
+        if "candidates" in result and len(result["candidates"]) > 0 and \
+           "content" in result["candidates"][0] and "parts" in result["candidates"][0]["content"] and \
+           len(result["candidates"][0]["content"]["parts"]) > 0:
+            return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        else:
+            print("❌ Gemini API response was not in the expected format.")
+            return None
     except Exception as e:
-        print("❌ Cohere error:", e)
+        print("❌ Gemini error:", e)
         return None
 
 # -------------------- Routes --------------------
@@ -113,7 +145,6 @@ def telegram_webhook():
 
     if state.get("step") == "roadmap_hours":
         state["hours"] = incoming_msg
-
         prompt = (
             f"You're a friendly teaching assistant helping a complete beginner learn {state['topic']}.\n"
             f"The learner's education level is {state['education']} and they can study for {state['hours']} per day.\n\n"
@@ -125,7 +156,7 @@ def telegram_webhook():
             "Keep the full response concise — under 800 words."
         )
 
-        response = call_cohere(prompt)
+        response = call_gemini(prompt)
         if response:
             send_message(chat_id, "🗺️ Here's your learning roadmap:")
             for chunk in split_message(response):
@@ -135,22 +166,32 @@ def telegram_webhook():
         user_state.pop(chat_id, None)
         return "ok"
 
-    # Learn topic flow
+    # Learn topic flow (modified to ask for language and use NCERT prompt)
     if state.get("step") == "learn_topic":
-        topic = incoming_msg
+        state["topic"] = incoming_msg
+        user_state[chat_id] = {"step": "learn_language", "topic": incoming_msg}
+        send_message(chat_id, "🌐 What language would you like the explanation in? (e.g., English, Hindi, Spanish)")
+        return "ok"
+    
+    if state.get("step") == "learn_language":
+        topic = state.get("topic")
+        language = incoming_msg
         user_state.pop(chat_id, None)
 
+        # Prompt for NCERT-style explanation
         prompt = (
-            f"You're a friendly tutor explaining the topic: {topic}.\n"
-            "First, give a **simple explanation** in 2–3 short paragraphs.\n"
-            "Then, suggest **3 beginner-friendly YouTube videos**.\n"
-            "Finally, suggest **2–3 websites or courses** for deeper learning.\n"
-            "Use emojis and markdown for clarity and engagement."
+            f"Act as a friendly tutor for Indian NCERT textbooks. "
+            f"Your goal is to simplify and explain the following topic for a student in a simple and clear manner:\n\n"
+            f"Topic: {topic}\n\n"
+            f"Please provide the explanation in a single, friendly paragraph, without using any headings or bullet points."
+            f"After the explanation, add a concluding sentence that directs the user to the official NCERT website, like this: "
+            f"\"You can find the official NCERT textbooks for all subjects at ncert.nic.in/ebooks.php.\"\n\n"
+            f"Then, translate the entire explanation and the concluding sentence into {language}."
         )
 
-        response = call_cohere(prompt)
+        response = call_gemini(prompt)
         if response:
-            send_message(chat_id, "📘 Here's what I found:")
+            send_message(chat_id, f"📘 Here's what I found about '{topic}' in {language}:")
             for chunk in split_message(response):
                 send_message(chat_id, chunk)
         else:
@@ -171,7 +212,7 @@ def telegram_webhook():
             "Explain like you're helping a beginner understand each step."
         )
 
-        response = call_cohere(prompt)
+        response = call_gemini(prompt)
         if response:
             send_message(chat_id, "🧠 Here's the solution:")
             for chunk in split_message(response):
@@ -188,9 +229,10 @@ def telegram_webhook():
 
 def set_webhook():
     """Set Telegram webhook only once when app starts"""
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={WEBHOOK_URL}"
-    res = requests.get(url)
-    print("🔗 Webhook set:", res.json())
+    if os.getenv("WEBHOOK_URL"): # Only set webhook if URL is available
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={WEBHOOK_URL}"
+        res = requests.get(url)
+        print("🔗 Webhook set:", res.json())
 
 if __name__ == "__main__":
     set_webhook()
