@@ -1,76 +1,141 @@
+# app.py
+# The main application file for the Telegram bot.
+
 from flask import Flask, request
-import requests
-import os
 from dotenv import load_dotenv
+import os
 import json
-import time
+import logging
+
+# Import the modular components
+from api_client import send_message, call_gemini, send_document
+from handlers import handle_message
+from utils import set_webhook
+
+# Set up logging for better debugging
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 app = Flask(__name__)
 
 load_dotenv()
 
-# API Keys
-# You will need to provide a Gemini API key in your .env file
-# as the 'gemini' model is not provided by the Canvas environment directly.
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent"
-
-# Session state for users
+# Global state for managing conversations
 user_state = {}
 
-# -------------------- Utilities --------------------
+# -------------------- Routes --------------------
 
-def send_message(chat_id, text):
-    """Send message to Telegram"""
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-    requests.post(TELEGRAM_API_URL, json=payload)
+@app.route("/")
+def home():
+    """A simple home route to check if the bot is running."""
+    return "🚀 Edgo Telegram bot is running!"
 
-def split_message(text, chunk_size=1400):
-    """Split long responses so Telegram accepts them"""
-    parts = []
-    while len(text) > chunk_size:
-        split_index = text.rfind("\n\n", 0, chunk_size)
-        split_index = split_index if split_index != -1 else chunk_size
-        parts.append(text[:split_index])
-        text = text[split_index:].lstrip()
-    parts.append(text)
-    return parts
+@app.route("/webhook", methods=["POST"])
+def telegram_webhook():
+    """Handles all incoming messages from Telegram."""
+    try:
+        data = request.get_json()
+        logging.info("📩 Incoming message: %s", json.dumps(data, indent=2))
+
+        if not data or "message" not in data or "text" not in data["message"]:
+            logging.warning("Received invalid message data.")
+            return "ok"
+
+        chat_id = data["message"]["chat"]["id"]
+        incoming_msg = data["message"]["text"].strip()
+        state = user_state.get(chat_id, {})
+
+        # Pass the message to the central handler
+        handle_message(chat_id, incoming_msg, state, user_state)
+
+    except Exception as e:
+        logging.error("An error occurred during webhook processing: %s", e, exc_info=True)
+        send_message(chat_id, "❌ Sorry, something went wrong. Please try again later.")
+
+    return "ok"
+
+# -------------------- Startup --------------------
+
+if __name__ == "__main__":
+    # The webhook URL must be set in your Render environment variables.
+    if os.getenv("WEBHOOK_URL"):
+        set_webhook()
+    else:
+        logging.error("WEBHOOK_URL environment variable is not set. Webhook will not be configured.")
+
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
+# api_client.py
+# Handles all communication with the Telegram and Gemini APIs.
+
+import os
+import requests
+import json
+import time
+import logging
+
+# Load API keys from environment variables
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent"
+
+def send_message(chat_id, text, parse_mode="Markdown"):
+    """Sends a message to a specific Telegram chat ID."""
+    url = f"{TELEGRAM_API_URL}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        logging.info("✅ Message sent successfully to chat ID: %s", chat_id)
+    except requests.exceptions.RequestException as e:
+        logging.error("❌ Failed to send message to Telegram: %s", e)
+
+def send_document(chat_id, file_data, filename, caption=None):
+    """Sends a document (e.g., PDF) to a specific Telegram chat ID."""
+    url = f"{TELEGRAM_API_URL}/sendDocument"
+    files = {
+        'document': (filename, file_data, 'application/pdf')
+    }
+    payload = {
+        "chat_id": chat_id,
+        "caption": caption
+    }
+    try:
+        response = requests.post(url, data=payload, files=files)
+        response.raise_for_status()
+        logging.info("✅ Document sent successfully to chat ID: %s", chat_id)
+    except requests.exceptions.RequestException as e:
+        logging.error("❌ Failed to send document to Telegram: %s", e)
 
 def call_gemini(prompt):
-    """Call Gemini API with exponential backoff for retries"""
+    """
+    Calls the Gemini API with exponential backoff for retries.
+    Returns the generated text or None on failure.
+    """
     try:
         payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": prompt}]
-                }
-            ]
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}]
         }
-        
-        headers = {
-            "Content-Type": "application/json"
-        }
+        headers = {"Content-Type": "application/json"}
         
         retries = 0
         max_retries = 3
         while retries < max_retries:
             response = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, data=json.dumps(payload))
-            if response.status_code == 429: # Too Many Requests
+            if response.status_code == 429:  # Too Many Requests
                 delay = 2**retries
-                print(f"Rate limit exceeded. Retrying in {delay} seconds...")
+                logging.warning("Rate limit exceeded. Retrying in %d seconds...", delay)
                 time.sleep(delay)
                 retries += 1
             else:
-                response.raise_for_status() # Raise an error for bad status codes
+                response.raise_for_status()
                 break
-        
+
         if retries == max_retries:
-            print("❌ Max retries reached. Giving up.")
+            logging.error("❌ Max retries reached. Giving up.")
             return None
 
         result = response.json()
@@ -79,31 +144,34 @@ def call_gemini(prompt):
            len(result["candidates"][0]["content"]["parts"]) > 0:
             return result["candidates"][0]["content"]["parts"][0]["text"].strip()
         else:
-            print("❌ Gemini API response was not in the expected format.")
+            logging.error("❌ Gemini API response was not in the expected format: %s", result)
             return None
     except Exception as e:
-        print("❌ Gemini error:", e)
+        logging.error("❌ Gemini API error: %s", e, exc_info=True)
         return None
 
-# -------------------- Routes --------------------
+# handlers.py
+# Contains the conversation flow logic and state management.
 
-@app.route("/")
-def home():
-    return "🚀 Telegram bot is running!"
+import os
+from api_client import send_message, call_gemini, send_document
+from utils import split_message, create_pdf_notes
 
-@app.route("/webhook", methods=["POST"])
-def telegram_webhook():
-    data = request.get_json()
-    print("📩 Incoming:", data)
+# Constants for conversation states
+STATE_MENU = "menu"
+STATE_ROADMAP_WHAT = "roadmap_what"
+STATE_ROADMAP_EDUCATION = "roadmap_education"
+STATE_ROADMAP_HOURS = "roadmap_hours"
+STATE_LEARN_TOPIC = "learn_topic"
+STATE_LEARN_LANGUAGE = "learn_language"
+STATE_LEARN_DOWNLOAD = "learn_download"
+STATE_SOLVE_PROBLEM = "solve_problem"
 
-    if "message" not in data or "text" not in data["message"]:
-        return "ok"
-
-    chat_id = data["message"]["chat"]["id"]
-    incoming_msg = data["message"]["text"].strip()
-    state = user_state.get(chat_id, {})
-
-    # Entry point
+def handle_message(chat_id, incoming_msg, state, user_state):
+    """
+    Main handler function that routes messages based on the user's state.
+    """
+    # Fallback to the initial menu if the user starts fresh
     if incoming_msg.lower() == "hi edgo":
         send_message(chat_id,
             "Hi! 👋 What would you like help with today?\n\n"
@@ -112,129 +180,228 @@ def telegram_webhook():
             "2️⃣ Learn a topic\n"
             "3️⃣ Solve a problem"
         )
-        user_state[chat_id] = {"step": "menu"}
-        return "ok"
+        user_state[chat_id] = {"step": STATE_MENU}
+        return
 
     # Handle menu selection
-    if state.get("step") == "menu":
-        if incoming_msg == "1":
-            user_state[chat_id] = {"step": "roadmap_what"}
-            send_message(chat_id, "📘 What do you need the roadmap for? (e.g., Python, Finance, etc.)")
-        elif incoming_msg == "2":
-            user_state[chat_id] = {"step": "learn_topic"}
-            send_message(chat_id, "📚 What topic would you like to learn about?")
-        elif incoming_msg == "3":
-            user_state[chat_id] = {"step": "solve_problem"}
-            send_message(chat_id, "🧠 What's the problem you'd like me to solve?")
-        else:
-            send_message(chat_id, "Please enter a valid option: 1, 2 or 3.")
-        return "ok"
+    if state.get("step") == STATE_MENU:
+        handle_menu_selection(chat_id, incoming_msg, user_state)
+        return
 
-    # Roadmap flow
-    if state.get("step") == "roadmap_what":
+    # Handle a user's response based on the current state
+    if state.get("step") == STATE_ROADMAP_WHAT:
         state["topic"] = incoming_msg
-        state["step"] = "roadmap_education"
+        state["step"] = STATE_ROADMAP_EDUCATION
         send_message(chat_id, "🎓 What is your current education level? (e.g., high school, college, MBA)")
-        return "ok"
-
-    if state.get("step") == "roadmap_education":
-        state["education"] = incoming_msg
-        state["step"] = "roadmap_hours"
-        send_message(chat_id, "⏱️ How many hours can you dedicate daily?")
-        return "ok"
-
-    if state.get("step") == "roadmap_hours":
-        state["hours"] = incoming_msg
-        prompt = (
-            f"You're a friendly teaching assistant helping a complete beginner learn {state['topic']}.\n"
-            f"The learner's education level is {state['education']} and they can study for {state['hours']} per day.\n\n"
-            "Create a **1-month learning roadmap**, broken into **4 weekly sections**.\n"
-            "Use emojis to make it engaging and visually clear.\n"
-            "Format using **Markdown**.\n"
-            "Keep explanations simple, warm, and motivating.\n"
-            "At the end, suggest 2–3 resources for continued learning.\n"
-            "Keep the full response concise — under 800 words."
-        )
-
-        response = call_gemini(prompt)
-        if response:
-            send_message(chat_id, "🗺️ Here's your learning roadmap:")
-            for chunk in split_message(response):
-                send_message(chat_id, chunk)
-        else:
-            send_message(chat_id, "❌ Couldn't generate the roadmap. Try again later.")
-        user_state.pop(chat_id, None)
-        return "ok"
-
-    # Learn topic flow (modified to ask for language and use NCERT prompt)
-    if state.get("step") == "learn_topic":
-        state["topic"] = incoming_msg
-        user_state[chat_id] = {"step": "learn_language", "topic": incoming_msg}
-        send_message(chat_id, "🌐 What language would you like the explanation in? (e.g., English, Hindi, Spanish)")
-        return "ok"
     
-    if state.get("step") == "learn_language":
-        topic = state.get("topic")
-        language = incoming_msg
+    elif state.get("step") == STATE_ROADMAP_EDUCATION:
+        state["education"] = incoming_msg
+        state["step"] = STATE_ROADMAP_HOURS
+        send_message(chat_id, "⏱️ How many hours can you dedicate daily?")
+
+    elif state.get("step") == STATE_ROADMAP_HOURS:
+        handle_roadmap_request(chat_id, incoming_msg, user_state, state)
+
+    elif state.get("step") == STATE_LEARN_TOPIC:
+        state["topic"] = incoming_msg
+        state["step"] = STATE_LEARN_LANGUAGE
+        send_message(chat_id, "🌐 What language would you like the explanation in? (e.g., English, Hindi, Spanish)")
+
+    elif state.get("step") == STATE_LEARN_LANGUAGE:
+        handle_learn_topic_request(chat_id, incoming_msg, user_state, state)
+        
+    elif state.get("step") == STATE_LEARN_DOWNLOAD:
+        handle_learn_download_request(chat_id, incoming_msg, user_state, state)
+
+    elif state.get("step") == STATE_SOLVE_PROBLEM:
+        handle_solve_problem_request(chat_id, incoming_msg, user_state)
+
+    else:
+        send_message(chat_id, "I'm not sure what you mean. Say 'hi edgo' to get started. 😊")
+
+def handle_menu_selection(chat_id, incoming_msg, user_state):
+    """Handles the user's choice from the main menu."""
+    if incoming_msg == "1":
+        user_state[chat_id] = {"step": STATE_ROADMAP_WHAT}
+        send_message(chat_id, "📘 What do you need the roadmap for? (e.g., Python, Finance, etc.)")
+    elif incoming_msg == "2":
+        user_state[chat_id] = {"step": STATE_LEARN_TOPIC}
+        send_message(chat_id, "📚 What topic would you like to learn about?")
+    elif incoming_msg == "3":
+        user_state[chat_id] = {"step": STATE_SOLVE_PROBLEM}
+        send_message(chat_id, "🧠 What's the problem you'd like me to solve?")
+    else:
+        send_message(chat_id, "Please enter a valid option: 1, 2 or 3.")
+
+def handle_roadmap_request(chat_id, incoming_msg, user_state, state):
+    """Generates and sends the learning roadmap."""
+    state["hours"] = incoming_msg
+    prompt = (
+        f"You're a friendly teaching assistant helping a complete beginner learn {state['topic']}.\n"
+        f"The learner's education level is {state['education']} and they can study for {state['hours']} per day.\n\n"
+        "Create a **1-month learning roadmap**, broken into **4 weekly sections**.\n"
+        "Use emojis to make it engaging and visually clear.\n"
+        "Format using **Markdown bullet points** for each week's tasks.\n"
+        "Keep explanations simple, warm, and motivating.\n"
+        "At the end, suggest 2–3 resources for continued learning.\n"
+        "Keep the full response concise — under 800 words."
+    )
+    send_message(chat_id, "Thinking about your roadmap... ⏳")
+    response = call_gemini(prompt)
+    if response:
+        send_message(chat_id, "🗺️ Here's your personalized learning roadmap:")
+        for chunk in split_message(response):
+            send_message(chat_id, chunk)
+    else:
+        send_message(chat_id, "❌ Couldn't generate the roadmap. Try again later.")
+    user_state.pop(chat_id, None)
+
+def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
+    """
+    Generates a detailed explanation with external resources
+    and prompts the user for a downloadable file.
+    """
+    topic = state.get("topic")
+    language = incoming_msg
+    state["language"] = language
+
+    prompt = (
+        f"Act as a friendly tutor for Indian NCERT textbooks. "
+        f"Your goal is to simplify and explain the following topic for a student in a simple and clear manner:\n\n"
+        f"Topic: {topic}\n\n"
+        f"Please provide a detailed, NCERT-style explanation in {language} in simple language using **Markdown bullet points**."
+        f"Make sure to include a concluding sentence that directs the user to the official NCERT website, "
+        f"like this: \"You can find the official NCERT textbooks for all subjects at ncert.nic.in/ebooks.php.\"\n"
+        f"Do not include any other resources in this response."
+    )
+
+    send_message(chat_id, "Finding and explaining the topic for you... ⏳")
+    response = call_gemini(prompt)
+    
+    if response:
+        # Save the full response for the PDF
+        state["full_notes"] = response
+        send_message(chat_id, f"📘 Here's the explanation of '{topic}':")
+        for chunk in split_message(response):
+            send_message(chat_id, chunk)
+
+        # Prompt for downloadable notes
+        send_message(chat_id,
+            "Would you like to get a downloadable PDF of these notes?\n"
+            "Reply with 'Yes' to get them."
+        )
+        user_state[chat_id]["step"] = STATE_LEARN_DOWNLOAD
+    else:
+        send_message(chat_id, "❌ Couldn't fetch learning content right now.")
         user_state.pop(chat_id, None)
 
-        # Prompt for NCERT-style explanation
-        prompt = (
-            f"Act as a friendly tutor for Indian NCERT textbooks. "
-            f"Your goal is to simplify and explain the following topic for a student in a simple and clear manner:\n\n"
-            f"Topic: {topic}\n\n"
-            f"Please provide the explanation in a single, friendly paragraph, without using any headings or bullet points."
-            f"After the explanation, add a concluding sentence that directs the user to the official NCERT website, like this: "
-            f"\"You can find the official NCERT textbooks for all subjects at ncert.nic.in/ebooks.php.\"\n\n"
-            f"Then, translate the entire explanation and the concluding sentence into {language}."
-        )
-
-        response = call_gemini(prompt)
-        if response:
-            send_message(chat_id, f"📘 Here's what I found about '{topic}' in {language}:")
-            for chunk in split_message(response):
-                send_message(chat_id, chunk)
+def handle_learn_download_request(chat_id, incoming_msg, user_state, state):
+    """Handles the user's request for a downloadable PDF."""
+    if incoming_msg.lower() == "yes":
+        notes_text = state.get("full_notes", "")
+        topic = state.get("topic", "notes")
+        
+        if notes_text:
+            send_message(chat_id, "Generating your notes as a PDF... 📄")
+            pdf_data = create_pdf_notes(topic, notes_text)
+            send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
+                          caption=f"Here are your downloadable notes for {topic}!")
         else:
-            send_message(chat_id, "❌ Couldn't fetch learning content right now.")
-        return "ok"
+            send_message(chat_id, "❌ I'm sorry, I couldn't find the notes to download.")
+    else:
+        send_message(chat_id, "Okay, skipping the download. Let me know if you need anything else.")
+    
+    user_state.pop(chat_id, None)
 
-    # Solve a problem flow
-    if state.get("step") == "solve_problem":
-        problem = incoming_msg
-        user_state.pop(chat_id, None)
+def handle_solve_problem_request(chat_id, incoming_msg, user_state):
+    """Generates a step-by-step solution to a problem."""
+    problem = incoming_msg
+    prompt = (
+        f"You're a smart tutor solving this problem step-by-step:\n\n"
+        f"{problem}\n\n"
+        "Give a detailed solution in simple steps, formatted using **Markdown bullet points**.\n"
+        "If needed, include a relevant example.\n"
+        "Use emojis to make it clear and engaging.\n"
+        "Explain like you're helping a beginner understand each step."
+    )
+    send_message(chat_id, "Thinking about the problem... 🤔")
+    response = call_gemini(prompt)
+    if response:
+        send_message(chat_id, "🧠 Here's the solution:")
+        for chunk in split_message(response):
+            send_message(chat_id, chunk)
+    else:
+        send_message(chat_id, "❌ Couldn't solve the problem. Try again later.")
+    user_state.pop(chat_id, None)
 
-        prompt = (
-            f"You're a smart tutor solving this problem step-by-step:\n\n"
-            f"{problem}\n\n"
-            "Give a detailed solution in simple steps.\n"
-            "If needed, include a **relevant example**.\n"
-            "Use **markdown formatting** and emojis to make it clear and engaging.\n"
-            "Explain like you're helping a beginner understand each step."
-        )
+# utils.py
+# Contains general utility functions for the bot.
 
-        response = call_gemini(prompt)
-        if response:
-            send_message(chat_id, "🧠 Here's the solution:")
-            for chunk in split_message(response):
-                send_message(chat_id, chunk)
-        else:
-            send_message(chat_id, "❌ Couldn't solve the problem. Try again later.")
-        return "ok"
+import requests
+import os
+import logging
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
-    # Fallback
-    send_message(chat_id, "Say 'hi edgo' to get started. 😊")
-    return "ok"
-
-# -------------------- Webhook Setup --------------------
+# The Telegram token needs to be accessible here for webhook setup
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 def set_webhook():
-    """Set Telegram webhook only once when app starts"""
-    if os.getenv("WEBHOOK_URL"): # Only set webhook if URL is available
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={WEBHOOK_URL}"
+    """Sets the Telegram webhook for the bot."""
+    webhook_url = os.getenv("WEBHOOK_URL")
+    url = f"{TELEGRAM_API_URL}/setWebhook?url={webhook_url}"
+    try:
         res = requests.get(url)
-        print("🔗 Webhook set:", res.json())
+        res.raise_for_status()
+        logging.info("🔗 Webhook set successfully: %s", res.json())
+    except requests.exceptions.RequestException as e:
+        logging.error("❌ Failed to set webhook: %s", e)
 
-if __name__ == "__main__":
-    set_webhook()
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+def split_message(text, chunk_size=1400):
+    """Splits a long message into smaller chunks for Telegram."""
+    parts = []
+    while len(text) > chunk_size:
+        # Find a suitable split point to avoid breaking words
+        split_index = text.rfind("\n\n", 0, chunk_size)
+        split_index = split_index if split_index != -1 else chunk_size
+        parts.append(text[:split_index].strip())
+        text = text[split_index:].lstrip()
+    parts.append(text.strip())
+    return [p for p in parts if p]
+
+def create_pdf_notes(title, content):
+    """
+    Generates a PDF file from the provided title and content.
+    Returns the file data as a BytesIO object.
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    story = []
+
+    # Register a font that supports a wide range of characters
+    try:
+        pdfmetrics.registerFont(TTFont('Vera', 'Vera.ttf'))
+        styles['Normal'].fontName = 'Vera'
+        styles['Heading1'].fontName = 'Vera'
+    except Exception as e:
+        logging.warning("Failed to load Vera.ttf, using default font. Error: %s", e)
+    
+    # Add title and content
+    story.append(Paragraph(f"<b>{title}</b>", styles['Heading1']))
+    story.append(Spacer(1, 12))
+    
+    # Replace markdown with PDF-friendly formatting
+    pdf_content = content.replace('* ', '\n\u2022 ').replace('-', '\n\u2022 ').replace('**', '')
+    for line in pdf_content.split('\n'):
+        story.append(Paragraph(line, styles['Normal']))
+        story.append(Spacer(1, 6))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
