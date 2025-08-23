@@ -167,7 +167,8 @@ def format_bullet_points(text):
     formatted_lines = []
     for line in lines:
         if line.strip().startswith('* '):
-            formatted_lines.append('- ' + line.strip()[2:])
+            # Change the prefix to a right-pointing arrow
+            formatted_lines.append('➤ ' + line.strip()[2:])
         else:
             formatted_lines.append(line)
     return '\n'.join(formatted_lines)
@@ -336,7 +337,7 @@ def handle_learn_download_request(chat_id, incoming_msg, user_state, state):
         topic = state.get("topic", "notes")
         
         if notes_text:
-            send_message(chat_id, "Generating your notes as a PDF... �")
+            send_message(chat_id, "Generating your notes as a PDF... 📄")
             pdf_data = create_pdf_notes(topic, notes_text)
             send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
                           caption=f"Here are your downloadable notes for {topic}!")
