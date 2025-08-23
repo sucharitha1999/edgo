@@ -7,11 +7,6 @@ import os
 import json
 import logging
 
-# Import the modular components
-from api_client import send_message, call_gemini, send_document
-from handlers import handle_message
-from utils import set_webhook
-
 # Set up logging for better debugging
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -153,9 +148,7 @@ def call_gemini(prompt):
 # handlers.py
 # Contains the conversation flow logic and state management.
 
-import os
-from api_client import send_message, call_gemini, send_document
-from utils import split_message, create_pdf_notes
+
 
 # Constants for conversation states
 STATE_MENU = "menu"
