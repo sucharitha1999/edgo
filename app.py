@@ -173,6 +173,17 @@ def format_bullet_points(text):
             formatted_lines.append(line)
     return '\n'.join(formatted_lines)
 
+def find_font_path(font_name="Vera.ttf"):
+    """
+    Tries to find the font file in the current directory.
+    Returns the full path if found, otherwise returns None.
+    """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    font_path = os.path.join(current_dir, font_name)
+    if os.path.exists(font_path):
+        return font_path
+    return None
+
 def create_pdf_notes(title, content):
     """
     Generates a PDF file from the provided title and content.
@@ -183,17 +194,20 @@ def create_pdf_notes(title, content):
     styles = getSampleStyleSheet()
     story = []
 
-    try:
-        pdfmetrics.registerFont(TTFont('Vera', 'Vera.ttf'))
+    # Attempt to register a Unicode-supporting font
+    font_path = find_font_path()
+    if font_path:
+        pdfmetrics.registerFont(TTFont('Vera', font_path))
         styles['Normal'].fontName = 'Vera'
         styles['Heading1'].fontName = 'Vera'
-    except Exception as e:
-        logging.warning("Failed to load Vera.ttf, using default font. Error: %s", e)
-    
+    else:
+        logging.warning("Font file 'Vera.ttf' not found. PDF may not display non-Latin characters correctly.")
+
     story.append(Paragraph(f"<b>{title}</b>", styles['Heading1']))
     story.append(Spacer(1, 12))
     
-    pdf_content = content.replace('* ', '\n\u2022 ').replace('-', '\n\u2022 ').replace('**', '')
+    # Replace markdown bullet points with a standard Unicode character
+    pdf_content = content.replace('* ', '\n\u2022 ').replace('**', '')
     for line in pdf_content.split('\n'):
         story.append(Paragraph(line, styles['Normal']))
         story.append(Spacer(1, 6))
