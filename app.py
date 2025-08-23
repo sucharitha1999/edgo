@@ -1,11 +1,19 @@
 # app.py
-# The main application file for the Telegram bot.
+# The main application file for the Telegram bot, with all functions consolidated.
 
 from flask import Flask, request
 from dotenv import load_dotenv
 import os
 import json
 import logging
+import requests
+import time
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 # Set up logging for better debugging
 logging.basicConfig(level=logging.INFO,
@@ -18,64 +26,25 @@ load_dotenv()
 # Global state for managing conversations
 user_state = {}
 
-# -------------------- Routes --------------------
-
-@app.route("/")
-def home():
-    """A simple home route to check if the bot is running."""
-    return "🚀 Edgo Telegram bot is running!"
-
-@app.route("/webhook", methods=["POST"])
-def telegram_webhook():
-    """Handles all incoming messages from Telegram."""
-    try:
-        data = request.get_json()
-        logging.info("📩 Incoming message: %s", json.dumps(data, indent=2))
-
-        if not data or "message" not in data or "text" not in data["message"]:
-            logging.warning("Received invalid message data.")
-            return "ok"
-
-        chat_id = data["message"]["chat"]["id"]
-        incoming_msg = data["message"]["text"].strip()
-        state = user_state.get(chat_id, {})
-
-        # Pass the message to the central handler
-        handle_message(chat_id, incoming_msg, state, user_state)
-
-    except Exception as e:
-        logging.error("An error occurred during webhook processing: %s", e, exc_info=True)
-        send_message(chat_id, "❌ Sorry, something went wrong. Please try again later.")
-
-    return "ok"
-
-# -------------------- Startup --------------------
-
-if __name__ == "__main__":
-    # The webhook URL must be set in your Render environment variables.
-    if os.getenv("WEBHOOK_URL"):
-        set_webhook()
-    else:
-        logging.error("WEBHOOK_URL environment variable is not set. Webhook will not be configured.")
-
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
-
-# api_client.py
-# Handles all communication with the Telegram and Gemini APIs.
-
-import os
-import requests
-import json
-import time
-import logging
-
 # Load API keys from environment variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent"
+
+# Constants for conversation states
+STATE_MENU = "menu"
+STATE_ROADMAP_WHAT = "roadmap_what"
+STATE_ROADMAP_EDUCATION = "roadmap_education"
+STATE_ROADMAP_HOURS = "roadmap_hours"
+STATE_LEARN_TOPIC = "learn_topic"
+STATE_LEARN_LANGUAGE = "learn_language"
+STATE_LEARN_DOWNLOAD = "learn_download"
+STATE_SOLVE_PROBLEM = "solve_problem"
+
+
+# -------------------- API Client Functions --------------------
 
 def send_message(chat_id, text, parse_mode="Markdown"):
     """Sends a message to a specific Telegram chat ID."""
@@ -145,26 +114,67 @@ def call_gemini(prompt):
         logging.error("❌ Gemini API error: %s", e, exc_info=True)
         return None
 
-# handlers.py
-# Contains the conversation flow logic and state management.
+
+# -------------------- Utility Functions --------------------
+
+def set_webhook():
+    """Sets the Telegram webhook for the bot."""
+    webhook_url = os.getenv("WEBHOOK_URL")
+    url = f"{TELEGRAM_API_URL}/setWebhook?url={webhook_url}"
+    try:
+        res = requests.get(url)
+        res.raise_for_status()
+        logging.info("🔗 Webhook set successfully: %s", res.json())
+    except requests.exceptions.RequestException as e:
+        logging.error("❌ Failed to set webhook: %s", e)
+
+def split_message(text, chunk_size=1400):
+    """Splits a long message into smaller chunks for Telegram."""
+    parts = []
+    while len(text) > chunk_size:
+        split_index = text.rfind("\n\n", 0, chunk_size)
+        split_index = split_index if split_index != -1 else chunk_size
+        parts.append(text[:split_index].strip())
+        text = text[split_index:].lstrip()
+    parts.append(text.strip())
+    return [p for p in parts if p]
+
+def create_pdf_notes(title, content):
+    """
+    Generates a PDF file from the provided title and content.
+    Returns the file data as a BytesIO object.
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    story = []
+
+    try:
+        pdfmetrics.registerFont(TTFont('Vera', 'Vera.ttf'))
+        styles['Normal'].fontName = 'Vera'
+        styles['Heading1'].fontName = 'Vera'
+    except Exception as e:
+        logging.warning("Failed to load Vera.ttf, using default font. Error: %s", e)
+    
+    story.append(Paragraph(f"<b>{title}</b>", styles['Heading1']))
+    story.append(Spacer(1, 12))
+    
+    pdf_content = content.replace('* ', '\n\u2022 ').replace('-', '\n\u2022 ').replace('**', '')
+    for line in pdf_content.split('\n'):
+        story.append(Paragraph(line, styles['Normal']))
+        story.append(Spacer(1, 6))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
 
 
-
-# Constants for conversation states
-STATE_MENU = "menu"
-STATE_ROADMAP_WHAT = "roadmap_what"
-STATE_ROADMAP_EDUCATION = "roadmap_education"
-STATE_ROADMAP_HOURS = "roadmap_hours"
-STATE_LEARN_TOPIC = "learn_topic"
-STATE_LEARN_LANGUAGE = "learn_language"
-STATE_LEARN_DOWNLOAD = "learn_download"
-STATE_SOLVE_PROBLEM = "solve_problem"
+# -------------------- Handler Functions --------------------
 
 def handle_message(chat_id, incoming_msg, state, user_state):
     """
     Main handler function that routes messages based on the user's state.
     """
-    # Fallback to the initial menu if the user starts fresh
     if incoming_msg.lower() == "hi edgo":
         send_message(chat_id,
             "Hi! 👋 What would you like help with today?\n\n"
@@ -176,12 +186,10 @@ def handle_message(chat_id, incoming_msg, state, user_state):
         user_state[chat_id] = {"step": STATE_MENU}
         return
 
-    # Handle menu selection
     if state.get("step") == STATE_MENU:
         handle_menu_selection(chat_id, incoming_msg, user_state)
         return
 
-    # Handle a user's response based on the current state
     if state.get("step") == STATE_ROADMAP_WHAT:
         state["topic"] = incoming_msg
         state["step"] = STATE_ROADMAP_EDUCATION
@@ -272,13 +280,11 @@ def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
     response = call_gemini(prompt)
     
     if response:
-        # Save the full response for the PDF
         state["full_notes"] = response
         send_message(chat_id, f"📘 Here's the explanation of '{topic}':")
         for chunk in split_message(response):
             send_message(chat_id, chunk)
 
-        # Prompt for downloadable notes
         send_message(chat_id,
             "Would you like to get a downloadable PDF of these notes?\n"
             "Reply with 'Yes' to get them."
@@ -327,74 +333,45 @@ def handle_solve_problem_request(chat_id, incoming_msg, user_state):
         send_message(chat_id, "❌ Couldn't solve the problem. Try again later.")
     user_state.pop(chat_id, None)
 
-# utils.py
-# Contains general utility functions for the bot.
 
-import requests
-import os
-import logging
-from io import BytesIO
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+# -------------------- Routes --------------------
 
-# The Telegram token needs to be accessible here for webhook setup
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+@app.route("/")
+def home():
+    """A simple home route to check if the bot is running."""
+    return "🚀 Edgo Telegram bot is running!"
 
-def set_webhook():
-    """Sets the Telegram webhook for the bot."""
-    webhook_url = os.getenv("WEBHOOK_URL")
-    url = f"{TELEGRAM_API_URL}/setWebhook?url={webhook_url}"
+@app.route("/webhook", methods=["POST"])
+def telegram_webhook():
+    """Handles all incoming messages from Telegram."""
     try:
-        res = requests.get(url)
-        res.raise_for_status()
-        logging.info("🔗 Webhook set successfully: %s", res.json())
-    except requests.exceptions.RequestException as e:
-        logging.error("❌ Failed to set webhook: %s", e)
+        data = request.get_json()
+        logging.info("📩 Incoming message: %s", json.dumps(data, indent=2))
 
-def split_message(text, chunk_size=1400):
-    """Splits a long message into smaller chunks for Telegram."""
-    parts = []
-    while len(text) > chunk_size:
-        # Find a suitable split point to avoid breaking words
-        split_index = text.rfind("\n\n", 0, chunk_size)
-        split_index = split_index if split_index != -1 else chunk_size
-        parts.append(text[:split_index].strip())
-        text = text[split_index:].lstrip()
-    parts.append(text.strip())
-    return [p for p in parts if p]
+        if not data or "message" not in data or "text" not in data["message"]:
+            logging.warning("Received invalid message data.")
+            return "ok"
 
-def create_pdf_notes(title, content):
-    """
-    Generates a PDF file from the provided title and content.
-    Returns the file data as a BytesIO object.
-    """
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter)
-    styles = getSampleStyleSheet()
-    story = []
+        chat_id = data["message"]["chat"]["id"]
+        incoming_msg = data["message"]["text"].strip()
+        state = user_state.get(chat_id, {})
 
-    # Register a font that supports a wide range of characters
-    try:
-        pdfmetrics.registerFont(TTFont('Vera', 'Vera.ttf'))
-        styles['Normal'].fontName = 'Vera'
-        styles['Heading1'].fontName = 'Vera'
+        handle_message(chat_id, incoming_msg, state, user_state)
+
     except Exception as e:
-        logging.warning("Failed to load Vera.ttf, using default font. Error: %s", e)
-    
-    # Add title and content
-    story.append(Paragraph(f"<b>{title}</b>", styles['Heading1']))
-    story.append(Spacer(1, 12))
-    
-    # Replace markdown with PDF-friendly formatting
-    pdf_content = content.replace('* ', '\n\u2022 ').replace('-', '\n\u2022 ').replace('**', '')
-    for line in pdf_content.split('\n'):
-        story.append(Paragraph(line, styles['Normal']))
-        story.append(Spacer(1, 6))
+        logging.error("An error occurred during webhook processing: %s", e, exc_info=True)
+        send_message(chat_id, "❌ Sorry, something went wrong. Please try again later.")
 
-    doc.build(story)
-    buffer.seek(0)
-    return buffer
+    return "ok"
+
+
+# -------------------- Startup --------------------
+
+if __name__ == "__main__":
+    if os.getenv("WEBHOOK_URL"):
+        set_webhook()
+    else:
+        logging.error("WEBHOOK_URL environment variable is not set. Webhook will not be configured.")
+
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
