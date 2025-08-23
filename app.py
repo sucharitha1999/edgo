@@ -1,6 +1,10 @@
 # app.py
 # The main application file for the Telegram bot, with all functions consolidated.
 
+# To resolve the 'reportlab' error, make sure you have a requirements.txt file
+# in your project's root directory that includes the following line:
+# reportlab
+
 from flask import Flask, request
 from dotenv import load_dotenv
 import os
@@ -129,15 +133,44 @@ def set_webhook():
         logging.error("❌ Failed to set webhook: %s", e)
 
 def split_message(text, chunk_size=1400):
-    """Splits a long message into smaller chunks for Telegram."""
+    """
+    Splits a long message into smaller chunks for Telegram, ensuring words are
+    not broken across chunks.
+    """
     parts = []
-    while len(text) > chunk_size:
-        split_index = text.rfind("\n\n", 0, chunk_size)
-        split_index = split_index if split_index != -1 else chunk_size
-        parts.append(text[:split_index].strip())
-        text = text[split_index:].lstrip()
-    parts.append(text.strip())
-    return [p for p in parts if p]
+    start = 0
+    while start < len(text):
+        end = min(start + chunk_size, len(text))
+        if end < len(text) and text[end] not in (' ', '\n', '\t'):
+            # Find the last space or newline before the chunk end
+            last_space = text.rfind(' ', start, end)
+            if last_space != -1:
+                end = last_space
+            else:
+                # If no space is found, break at the chunk size anyway
+                pass
+        
+        chunk = text[start:end].strip()
+        if chunk:
+            parts.append(chunk)
+        start = end
+        
+    return parts
+
+def format_bullet_points(text):
+    """
+    Ensures bullet points are consistently formatted with a hyphen for better
+    display on different chat clients.
+    """
+    # Replace markdown list items starting with * with a hyphen
+    lines = text.split('\n')
+    formatted_lines = []
+    for line in lines:
+        if line.strip().startswith('* '):
+            formatted_lines.append('- ' + line.strip()[2:])
+        else:
+            formatted_lines.append(line)
+    return '\n'.join(formatted_lines)
 
 def create_pdf_notes(title, content):
     """
@@ -250,8 +283,9 @@ def handle_roadmap_request(chat_id, incoming_msg, user_state, state):
     send_message(chat_id, "Thinking about your roadmap... ⏳")
     response = call_gemini(prompt)
     if response:
+        formatted_response = format_bullet_points(response)
         send_message(chat_id, "🗺️ Here's your personalized learning roadmap:")
-        for chunk in split_message(response):
+        for chunk in split_message(formatted_response):
             send_message(chat_id, chunk)
     else:
         send_message(chat_id, "❌ Couldn't generate the roadmap. Try again later.")
@@ -281,8 +315,9 @@ def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
     
     if response:
         state["full_notes"] = response
+        formatted_response = format_bullet_points(response)
         send_message(chat_id, f"📘 Here's the explanation of '{topic}':")
-        for chunk in split_message(response):
+        for chunk in split_message(formatted_response):
             send_message(chat_id, chunk)
 
         send_message(chat_id,
@@ -301,7 +336,7 @@ def handle_learn_download_request(chat_id, incoming_msg, user_state, state):
         topic = state.get("topic", "notes")
         
         if notes_text:
-            send_message(chat_id, "Generating your notes as a PDF... 📄")
+            send_message(chat_id, "Generating your notes as a PDF... �")
             pdf_data = create_pdf_notes(topic, notes_text)
             send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
                           caption=f"Here are your downloadable notes for {topic}!")
