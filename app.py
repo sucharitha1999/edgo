@@ -49,14 +49,13 @@ STATE_SOLVE_PROBLEM = "solve_problem"
 
 # Explicit font mappings
 FONT_MAPPINGS = {
-    # Add new languages and their corresponding font filenames here.
-    # The filename should exactly match the .ttf file in the 'languages' folder.
+    # CRITICAL: The filename value here MUST EXACTLY match the filename
+    # in your 'languages' folder, including case and any hyphens.
     "english": "NotoSans-Regular.ttf",
     "telugu": "NotoSansTelugu.ttf",
     "kannada": "NotoSansKannada.ttf",
     "tamil": "NotoSansTamil.ttf",
-    "malayalam": "NotoSansMalyalam.ttf",
-    # Add more mappings as needed, e.g., "bengali": "NotoSansBengali-Regular.ttf"
+    "malayalam": "NotoSansMalayalam.ttf",
 }
 
 
@@ -192,6 +191,10 @@ def load_fonts():
     """
     for lang, filename in FONT_MAPPINGS.items():
         font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "languages", filename)
+        
+        # This print statement helps debug font path issues.
+        logging.info(f"Attempting to load font from: {font_path}")
+
         if os.path.exists(font_path):
             try:
                 # Use a simple, predictable name for the font
@@ -384,7 +387,7 @@ def handle_learn_download_request(chat_id, incoming_msg, user_state, state):
         language = state.get("language", "english")
         
         if notes_text:
-            send_message(chat_id, "Generating your notes as a PDF... 📄")
+            send_message(chat_id, "Generating your notes as a PDF... �")
             pdf_data = create_pdf_notes(topic, notes_text, language)
             send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
                           caption=f"Here are your downloadable notes for {topic}!")
