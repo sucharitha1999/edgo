@@ -47,8 +47,18 @@ STATE_LEARN_LANGUAGE = "learn_language"
 STATE_LEARN_DOWNLOAD = "learn_download"
 STATE_SOLVE_PROBLEM = "solve_problem"
 
-# Font mappings will be populated dynamically
-FONT_MAPPINGS = {}
+# Explicit font mappings
+FONT_MAPPINGS = {
+    # Add new languages and their corresponding font filenames here.
+    # The filename should exactly match the .ttf file in the 'languages' folder.
+    "english": "NotoSans-Regular.ttf",
+    "hindi": "NotoSans-Regular.ttf",
+    "telugu": "NotoSansTelugu.ttf",
+    "kannada": "NotoSansKannada.ttf",
+    "tamil": "NotoSansTamil.ttf",
+    "malayalam": "NotoSansMalayalam.ttf",
+    # Add more mappings as needed, e.g., "bengali": "NotoSansBengali-Regular.ttf"
+}
 
 
 # -------------------- API Client Functions --------------------
@@ -178,32 +188,21 @@ def format_bullet_points(text):
 
 def load_fonts():
     """
-    Dynamically scans the 'languages' subdirectory for TTF files and populates
-    a global dictionary mapping language names to font filenames.
-    This allows adding new fonts without changing the code.
+    Checks for the existence of all fonts listed in the FONT_MAPPINGS dictionary
+    and registers them with reportlab.
     """
-    global FONT_MAPPINGS
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    languages_dir = os.path.join(current_dir, "languages")
-
-    if not os.path.exists(languages_dir):
-        logging.warning("The 'languages' directory does not exist. No fonts will be loaded.")
-        return
-
-    for filename in os.listdir(languages_dir):
-        if filename.endswith(".ttf"):
-            # A simple heuristic to get the language name from the filename
-            # e.g., NotoSansTelugu-Regular.ttf -> telugu
-            base_name = os.path.splitext(filename)[0]
-            if '-' in base_name:
-                parts = base_name.split('-')
-                language_name = parts[1].lower() if parts[1] else "english"
-            else:
-                # Fallback for generic font names
-                language_name = base_name.lower()
-
-            FONT_MAPPINGS[language_name] = filename
-            logging.info(f"Loaded font mapping: '{language_name}' -> '{filename}'")
+    for lang, filename in FONT_MAPPINGS.items():
+        font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "languages", filename)
+        if os.path.exists(font_path):
+            try:
+                # Use a simple, predictable name for the font
+                font_name = os.path.splitext(filename)[0]
+                pdfmetrics.registerFont(TTFont(font_name, font_path))
+                logging.info(f"Registered font '{font_name}' for language '{lang}' from '{filename}'.")
+            except Exception as e:
+                logging.error(f"❌ Failed to register font '{filename}': {e}")
+        else:
+            logging.warning(f"Font file '{filename}' for language '{lang}' not found at '{font_path}'.")
 
 def create_pdf_notes(title, content, language):
     """
@@ -216,34 +215,27 @@ def create_pdf_notes(title, content, language):
     styles = getSampleStyleSheet()
     story = []
 
-    # Get the font filename from the dynamic mapping
+    # Get the font name based on the requested language from the mapping
     font_filename = FONT_MAPPINGS.get(language.lower())
+    font_name = os.path.splitext(font_filename)[0] if font_filename else None
     
-    # Register the font if found
-    if font_filename:
-        font_name = os.path.splitext(font_filename)[0] # Get name without extension
-        font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "languages", font_filename)
-        
-        # Check if the font file exists at the constructed path
-        if os.path.exists(font_path):
-            pdfmetrics.registerFont(TTFont(font_name, font_path))
-            styles['Normal'].fontName = font_name
-            styles['Heading1'].fontName = font_name
-            logging.info(f"Using font: {font_name} for language: {language}")
-        else:
-            logging.warning(f"Font file '{font_filename}' not found at '{font_path}'. PDF may not display non-Latin characters correctly.")
-            # Fallback to a default font if the specific one is missing
-            default_font_filename = FONT_MAPPINGS.get("english")
-            if default_font_filename:
-                default_font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "languages", default_font_filename)
-                if os.path.exists(default_font_path):
-                    pdfmetrics.registerFont(TTFont('default_font', default_font_path))
-                    styles['Normal'].fontName = 'default_font'
-                    styles['Heading1'].fontName = 'default_font'
-                    logging.warning(f"Using default font '{default_font_filename}' as a fallback.")
+    # Try to use the specific font, or a fallback if it's not registered
+    if font_name and font_name in pdfmetrics.get_font_names():
+        styles['Normal'].fontName = font_name
+        styles['Heading1'].fontName = font_name
     else:
-        logging.warning(f"No specific font found for language '{language}'. PDF may not display non-Latin characters correctly.")
-        
+        # Fallback to a common font, like the one for English
+        fallback_font_filename = FONT_MAPPINGS.get("english")
+        fallback_font_name = os.path.splitext(fallback_font_filename)[0] if fallback_font_filename else None
+        if fallback_font_name and fallback_font_name in pdfmetrics.get_font_names():
+            styles['Normal'].fontName = fallback_font_name
+            styles['Heading1'].fontName = fallback_font_name
+            logging.warning(f"No specific font found for '{language}', using fallback font '{fallback_font_name}'.")
+        else:
+            # Final fallback if no custom fonts could be registered
+            logging.error(f"Could not find or register any custom font. Using default Reportlab font which may not support Unicode.")
+
+
     story.append(Paragraph(f"<b>{title}</b>", styles['Heading1']))
     story.append(Spacer(1, 12))
     
