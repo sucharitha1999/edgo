@@ -55,7 +55,7 @@ FONT_MAPPINGS = {
     "telugu": "NotoSansTelugu.ttf",
     "kannada": "NotoSansKannada.ttf",
     "tamil": "NotoSansTamil.ttf",
-    "malayalam": "NotoSansMalayalam.ttf",
+    "malayalam": "NotoSansMalyalam.ttf",
 }
 
 
