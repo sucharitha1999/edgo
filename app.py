@@ -173,7 +173,7 @@ def format_bullet_points(text):
             formatted_lines.append(line)
     return '\n'.join(formatted_lines)
 
-def find_font_path(font_name="Vera.ttf"):
+def find_font_path(font_name="NotoSans-Regular.ttf"):
     """
     Tries to find the font file in the current directory.
     Returns the full path if found, otherwise returns None.
@@ -195,13 +195,14 @@ def create_pdf_notes(title, content):
     story = []
 
     # Attempt to register a Unicode-supporting font
-    font_path = find_font_path()
+    font_name = "NotoSans-Regular.ttf"
+    font_path = find_font_path(font_name)
     if font_path:
-        pdfmetrics.registerFont(TTFont('Vera', font_path))
-        styles['Normal'].fontName = 'Vera'
-        styles['Heading1'].fontName = 'Vera'
+        pdfmetrics.registerFont(TTFont('NotoSans', font_path))
+        styles['Normal'].fontName = 'NotoSans'
+        styles['Heading1'].fontName = 'NotoSans'
     else:
-        logging.warning("Font file 'Vera.ttf' not found. PDF may not display non-Latin characters correctly.")
+        logging.warning(f"Font file '{font_name}' not found. PDF may not display non-Latin characters correctly.")
 
     story.append(Paragraph(f"<b>{title}</b>", styles['Heading1']))
     story.append(Spacer(1, 12))
