@@ -39,13 +39,11 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini
 
 # Constants for conversation states
 STATE_MENU = "menu"
-STATE_ROADMAP_WHAT = "roadmap_what"
-STATE_ROADMAP_EDUCATION = "roadmap_education"
-STATE_ROADMAP_HOURS = "roadmap_hours"
 STATE_LEARN_TOPIC = "learn_topic"
 STATE_LEARN_LANGUAGE = "learn_language"
 STATE_LEARN_DOWNLOAD = "learn_download"
-STATE_SOLVE_PROBLEM = "solve_problem"
+STATE_MCQ_TOPIC = "mcq_topic"
+STATE_GLOBAL_OPTION = "global_option"
 
 
 # -------------------- API Client Functions --------------------
@@ -228,9 +226,9 @@ def handle_message(chat_id, incoming_msg, state, user_state):
         send_message(chat_id,
             "Hi! 👋 What would you like help with today?\n\n"
             "*Reply with a number:*\n"
-            "1️⃣ Schedule a learning roadmap\n"
-            "2️⃣ Learn a topic\n"
-            "3️⃣ Solve a problem"
+            "1️⃣ Learn about a topic\n"
+            "2️⃣ Test your knowledge with MCQs\n"
+            "3️⃣ Explore a cultural and language exchange"
         )
         user_state[chat_id] = {"step": STATE_MENU}
         return
@@ -239,32 +237,22 @@ def handle_message(chat_id, incoming_msg, state, user_state):
         handle_menu_selection(chat_id, incoming_msg, user_state)
         return
 
-    if state.get("step") == STATE_ROADMAP_WHAT:
-        state["topic"] = incoming_msg
-        state["step"] = STATE_ROADMAP_EDUCATION
-        send_message(chat_id, "🎓 What is your current education level? (e.g., high school, college, MBA)")
-    
-    elif state.get("step") == STATE_ROADMAP_EDUCATION:
-        state["education"] = incoming_msg
-        state["step"] = STATE_ROADMAP_HOURS
-        send_message(chat_id, "⏱️ How many hours can you dedicate daily?")
-
-    elif state.get("step") == STATE_ROADMAP_HOURS:
-        handle_roadmap_request(chat_id, incoming_msg, user_state, state)
-
-    elif state.get("step") == STATE_LEARN_TOPIC:
+    if state.get("step") == STATE_LEARN_TOPIC:
         state["topic"] = incoming_msg
         state["step"] = STATE_LEARN_LANGUAGE
         send_message(chat_id, "🌐 What language would you like the explanation in? (e.g., English, Hindi, Spanish)")
-
+    
     elif state.get("step") == STATE_LEARN_LANGUAGE:
         handle_learn_topic_request(chat_id, incoming_msg, user_state, state)
         
     elif state.get("step") == STATE_LEARN_DOWNLOAD:
         handle_learn_download_request(chat_id, incoming_msg, user_state, state)
 
-    elif state.get("step") == STATE_SOLVE_PROBLEM:
-        handle_solve_problem_request(chat_id, incoming_msg, user_state)
+    elif state.get("step") == STATE_MCQ_TOPIC:
+        handle_mcq_request(chat_id, incoming_msg, user_state)
+    
+    elif state.get("step") == STATE_GLOBAL_OPTION:
+        handle_global_option_request(chat_id, incoming_msg, user_state)
 
     else:
         send_message(chat_id, "I'm not sure what you mean. Say 'hi edgo' to get started. 😊")
@@ -272,40 +260,17 @@ def handle_message(chat_id, incoming_msg, state, user_state):
 def handle_menu_selection(chat_id, incoming_msg, user_state):
     """Handles the user's choice from the main menu."""
     if incoming_msg == "1":
-        user_state[chat_id] = {"step": STATE_ROADMAP_WHAT}
-        send_message(chat_id, "📘 What do you need the roadmap for? (e.g., Python, Finance, etc.)")
-    elif incoming_msg == "2":
         user_state[chat_id] = {"step": STATE_LEARN_TOPIC}
         send_message(chat_id, "📚 What topic would you like to learn about?")
+    elif incoming_msg == "2":
+        user_state[chat_id] = {"step": STATE_MCQ_TOPIC}
+        send_message(chat_id, "📝 What topic would you like a quiz on?")
     elif incoming_msg == "3":
-        user_state[chat_id] = {"step": STATE_SOLVE_PROBLEM}
-        send_message(chat_id, "🧠 What's the problem you'd like me to solve?")
+        user_state[chat_id] = {"step": STATE_GLOBAL_OPTION}
+        send_message(chat_id, "🌍 This feature is still under development, but it will help you connect with learners from different cultures to practice languages and share knowledge. Come back soon for updates!")
+        user_state.pop(chat_id, None)
     else:
         send_message(chat_id, "Please enter a valid option: 1, 2 or 3.")
-
-def handle_roadmap_request(chat_id, incoming_msg, user_state, state):
-    """Generates and sends the learning roadmap."""
-    state["hours"] = incoming_msg
-    prompt = (
-        f"You're a friendly teaching assistant helping a complete beginner learn {state['topic']}.\n"
-        f"The learner's education level is {state['education']} and they can study for {state['hours']} per day.\n\n"
-        "Create a **1-month learning roadmap**, broken into **4 weekly sections**.\n"
-        "Use emojis to make it engaging and visually clear.\n"
-        "Format using **Markdown bullet points** for each week's tasks.\n"
-        "Keep explanations simple, warm, and motivating.\n"
-        "At the end, suggest 2–3 resources for continued learning.\n"
-        "Keep the full response concise — under 800 words."
-    )
-    send_message(chat_id, "Thinking about your roadmap... ⏳")
-    response = call_gemini(prompt)
-    if response:
-        formatted_response = format_bullet_points(response)
-        send_message(chat_id, "🗺️ Here's your personalized learning roadmap:")
-        for chunk in split_message(formatted_response):
-            send_message(chat_id, chunk)
-    else:
-        send_message(chat_id, "❌ Couldn't generate the roadmap. Try again later.")
-    user_state.pop(chat_id, None)
 
 def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
     """
@@ -315,17 +280,19 @@ def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
     topic = state.get("topic")
     language = incoming_msg
     state["language"] = language
-
+    
     prompt = (
         f"Act as a friendly tutor for Indian NCERT textbooks. "
         f"Your goal is to simplify and explain the following topic for a student in a simple and clear manner:\n\n"
         f"Topic: {topic}\n\n"
-        f"Please provide a detailed, NCERT-style explanation in {language} in simple language using **Markdown bullet points**."
-        f"Make sure to include a concluding sentence that directs the user to the official NCERT website, "
-        f"like this: \"You can find the official NCERT textbooks for all subjects at ncert.nic.in/ebooks.php.\"\n"
-        f"Do not include any other resources in this response."
+        f"Please provide a detailed, explanation in {language} in simple language using **Markdown bullet points**."
+        f"After the main explanation, provide two sections:\n"
+        f"1. **Explore More** with links to relevant websites for deeper learning.\n"
+        f"2. **Watch and Learn** with links to relevant YouTube videos.\n"
+        f"If the topic is related to the Indian NCERT curriculum, please also include the following sentence at the very end of your response: "
+        f"\"You can find the official NCERT textbooks for all subjects at ncert.nic.in/ebooks.php.\"\n"
     )
-
+    
     send_message(chat_id, "Finding and explaining the topic for you... ⏳")
     response = call_gemini(prompt)
     
@@ -363,25 +330,31 @@ def handle_learn_download_request(chat_id, incoming_msg, user_state, state):
     
     user_state.pop(chat_id, None)
 
-def handle_solve_problem_request(chat_id, incoming_msg, user_state):
-    """Generates a step-by-step solution to a problem."""
-    problem = incoming_msg
+def handle_mcq_request(chat_id, incoming_msg, user_state):
+    """Generates insightful MCQs and sends the solution."""
+    topic = incoming_msg
     prompt = (
-        f"You're a smart tutor solving this problem step-by-step:\n\n"
-        f"{problem}\n\n"
-        "Give a detailed solution in simple steps, formatted using **Markdown bullet points**.\n"
-        "If needed, include a relevant example.\n"
-        "Use emojis to make it clear and engaging.\n"
-        "Explain like you're helping a beginner understand each step."
+        f"Create 5 challenging and insightful multiple-choice questions (MCQs) on the topic: '{topic}'.\n"
+        f"For each question, provide 4 options (A, B, C, D) and then, in a separate section, provide "
+        f"the correct answer and a brief, simple explanation of why it is correct.\n"
+        f"Use Markdown to format the questions and answers clearly."
     )
-    send_message(chat_id, "Thinking about the problem... 🤔")
+    send_message(chat_id, f"Generating an insightful quiz on '{topic}'... 🤔")
     response = call_gemini(prompt)
     if response:
-        send_message(chat_id, "🧠 Here's the solution:")
+        send_message(chat_id, "🧠 Here's your quiz:")
         for chunk in split_message(response):
             send_message(chat_id, chunk)
     else:
-        send_message(chat_id, "❌ Couldn't solve the problem. Try again later.")
+        send_message(chat_id, "❌ Couldn't generate the MCQs. Try again later.")
+    user_state.pop(chat_id, None)
+
+def handle_global_option_request(chat_id, incoming_msg, user_state):
+    """
+    Handles the new "Globalizing Education" option. This is a placeholder for future
+    development.
+    """
+    send_message(chat_id, "🌍 This feature is still under development, but it will help you connect with learners from different cultures to practice languages and share knowledge. Come back soon for updates!")
     user_state.pop(chat_id, None)
 
 
