@@ -53,7 +53,7 @@ FONT_MAPPINGS = {
     # The filename should exactly match the .ttf file in the 'languages' folder.
     "english": "NotoSans-Regular.ttf",
     "hindi": "NotoSans-Regular.ttf",
-    "telugu": "NotoSansTelugu.ttf",
+    "Telugu": "NotoSansTelugu.ttf",
     "kannada": "NotoSansKannada.ttf",
     "tamil": "NotoSansTamil.ttf",
     "malayalam": "NotoSansMalayalam.ttf",
