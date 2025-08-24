@@ -47,17 +47,6 @@ STATE_LEARN_LANGUAGE = "learn_language"
 STATE_LEARN_DOWNLOAD = "learn_download"
 STATE_SOLVE_PROBLEM = "solve_problem"
 
-# Explicit font mappings
-FONT_MAPPINGS = {
-    # CRITICAL: The filename value here MUST EXACTLY match the filename
-    # in your 'languages' folder, including case and any hyphens.
-    "english": "NotoSans-Regular.ttf",
-    "telugu": "NotoSansTelugu.ttf",
-    "kannada": "NotoSansKannada.ttf",
-    "tamil": "NotoSansTamil.ttf",
-    "malayalam": "NotoSansMalyalam.ttf",
-}
-
 
 # -------------------- API Client Functions --------------------
 
@@ -184,32 +173,20 @@ def format_bullet_points(text):
             formatted_lines.append(line)
     return '\n'.join(formatted_lines)
 
-def load_fonts():
+def find_font_path(font_name="NotoSans-Regular.ttf"):
     """
-    Checks for the existence of all fonts listed in the FONT_MAPPINGS dictionary
-    and registers them with reportlab.
+    Tries to find the font file in the current directory.
+    Returns the full path if found, otherwise returns None.
     """
-    for lang, filename in FONT_MAPPINGS.items():
-        font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "languages", filename)
-        
-        # This print statement helps debug font path issues.
-        logging.info(f"Attempting to load font from: {font_path}")
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    font_path = os.path.join(current_dir, font_name)
+    if os.path.exists(font_path):
+        return font_path
+    return None
 
-        if os.path.exists(font_path):
-            try:
-                # Use a simple, predictable name for the font
-                font_name = os.path.splitext(filename)[0]
-                pdfmetrics.registerFont(TTFont(font_name, font_path))
-                logging.info(f"Registered font '{font_name}' for language '{lang}' from '{filename}'.")
-            except Exception as e:
-                logging.error(f"❌ Failed to register font '{filename}': {e}")
-        else:
-            logging.warning(f"Font file '{filename}' for language '{lang}' not found at '{font_path}'.")
-
-def create_pdf_notes(title, content, language):
+def create_pdf_notes(title, content):
     """
-    Generates a PDF file from the provided title and content,
-    selecting the font based on the language.
+    Generates a PDF file from the provided title and content.
     Returns the file data as a BytesIO object.
     """
     buffer = BytesIO()
@@ -217,26 +194,15 @@ def create_pdf_notes(title, content, language):
     styles = getSampleStyleSheet()
     story = []
 
-    # Get the font name based on the requested language from the mapping
-    font_filename = FONT_MAPPINGS.get(language.lower())
-    font_name = os.path.splitext(font_filename)[0] if font_filename else None
-    
-    # Try to use the specific font, or a fallback if it's not registered
-    if font_name and font_name in pdfmetrics.get_font_names():
-        styles['Normal'].fontName = font_name
-        styles['Heading1'].fontName = font_name
+    # Attempt to register a Unicode-supporting font
+    font_name = "NotoSans-Regular.ttf"
+    font_path = find_font_path(font_name)
+    if font_path:
+        pdfmetrics.registerFont(TTFont('NotoSans', font_path))
+        styles['Normal'].fontName = 'NotoSans'
+        styles['Heading1'].fontName = 'NotoSans'
     else:
-        # Fallback to a common font, like the one for English
-        fallback_font_filename = FONT_MAPPINGS.get("english")
-        fallback_font_name = os.path.splitext(fallback_font_filename)[0] if fallback_font_filename else None
-        if fallback_font_name and fallback_font_name in pdfmetrics.get_font_names():
-            styles['Normal'].fontName = fallback_font_name
-            styles['Heading1'].fontName = fallback_font_name
-            logging.warning(f"No specific font found for '{language}', using fallback font '{fallback_font_name}'.")
-        else:
-            # Final fallback if no custom fonts could be registered
-            logging.error(f"Could not find or register any custom font. Using default Reportlab font which may not support Unicode.")
-
+        logging.warning(f"Font file '{font_name}' not found. PDF may not display non-Latin characters correctly.")
 
     story.append(Paragraph(f"<b>{title}</b>", styles['Heading1']))
     story.append(Spacer(1, 12))
@@ -384,11 +350,10 @@ def handle_learn_download_request(chat_id, incoming_msg, user_state, state):
     if incoming_msg.lower() == "yes":
         notes_text = state.get("full_notes", "")
         topic = state.get("topic", "notes")
-        language = state.get("language", "english")
         
         if notes_text:
-            send_message(chat_id, "Generating your notes as a PDF... �")
-            pdf_data = create_pdf_notes(topic, notes_text, language)
+            send_message(chat_id, "Generating your notes as a PDF... 📄")
+            pdf_data = create_pdf_notes(topic, notes_text)
             send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
                           caption=f"Here are your downloadable notes for {topic}!")
         else:
@@ -459,6 +424,5 @@ if __name__ == "__main__":
     else:
         logging.error("WEBHOOK_URL environment variable is not set. Webhook will not be configured.")
 
-    load_fonts()  # Load fonts at startup
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
