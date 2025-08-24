@@ -47,6 +47,9 @@ STATE_LEARN_LANGUAGE = "learn_language"
 STATE_LEARN_DOWNLOAD = "learn_download"
 STATE_SOLVE_PROBLEM = "solve_problem"
 
+# Font mappings will be populated dynamically
+FONT_MAPPINGS = {}
+
 
 # -------------------- API Client Functions --------------------
 
@@ -173,20 +176,39 @@ def format_bullet_points(text):
             formatted_lines.append(line)
     return '\n'.join(formatted_lines)
 
-def find_font_path(font_name="NotoSans-Regular.ttf"):
+def load_fonts():
     """
-    Tries to find the font file in the current directory.
-    Returns the full path if found, otherwise returns None.
+    Dynamically scans the 'languages' subdirectory for TTF files and populates
+    a global dictionary mapping language names to font filenames.
+    This allows adding new fonts without changing the code.
     """
+    global FONT_MAPPINGS
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    font_path = os.path.join(current_dir, font_name)
-    if os.path.exists(font_path):
-        return font_path
-    return None
+    languages_dir = os.path.join(current_dir, "languages")
 
-def create_pdf_notes(title, content):
+    if not os.path.exists(languages_dir):
+        logging.warning("The 'languages' directory does not exist. No fonts will be loaded.")
+        return
+
+    for filename in os.listdir(languages_dir):
+        if filename.endswith(".ttf"):
+            # A simple heuristic to get the language name from the filename
+            # e.g., NotoSansTelugu-Regular.ttf -> telugu
+            base_name = os.path.splitext(filename)[0]
+            if '-' in base_name:
+                parts = base_name.split('-')
+                language_name = parts[1].lower() if parts[1] else "english"
+            else:
+                # Fallback for generic font names
+                language_name = base_name.lower()
+
+            FONT_MAPPINGS[language_name] = filename
+            logging.info(f"Loaded font mapping: '{language_name}' -> '{filename}'")
+
+def create_pdf_notes(title, content, language):
     """
-    Generates a PDF file from the provided title and content.
+    Generates a PDF file from the provided title and content,
+    selecting the font based on the language.
     Returns the file data as a BytesIO object.
     """
     buffer = BytesIO()
@@ -194,16 +216,34 @@ def create_pdf_notes(title, content):
     styles = getSampleStyleSheet()
     story = []
 
-    # Attempt to register a Unicode-supporting font
-    font_name = "NotoSans-Regular.ttf"
-    font_path = find_font_path(font_name)
-    if font_path:
-        pdfmetrics.registerFont(TTFont('NotoSans', font_path))
-        styles['Normal'].fontName = 'NotoSans'
-        styles['Heading1'].fontName = 'NotoSans'
+    # Get the font filename from the dynamic mapping
+    font_filename = FONT_MAPPINGS.get(language.lower())
+    
+    # Register the font if found
+    if font_filename:
+        font_name = os.path.splitext(font_filename)[0] # Get name without extension
+        font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "languages", font_filename)
+        
+        # Check if the font file exists at the constructed path
+        if os.path.exists(font_path):
+            pdfmetrics.registerFont(TTFont(font_name, font_path))
+            styles['Normal'].fontName = font_name
+            styles['Heading1'].fontName = font_name
+            logging.info(f"Using font: {font_name} for language: {language}")
+        else:
+            logging.warning(f"Font file '{font_filename}' not found at '{font_path}'. PDF may not display non-Latin characters correctly.")
+            # Fallback to a default font if the specific one is missing
+            default_font_filename = FONT_MAPPINGS.get("english")
+            if default_font_filename:
+                default_font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "languages", default_font_filename)
+                if os.path.exists(default_font_path):
+                    pdfmetrics.registerFont(TTFont('default_font', default_font_path))
+                    styles['Normal'].fontName = 'default_font'
+                    styles['Heading1'].fontName = 'default_font'
+                    logging.warning(f"Using default font '{default_font_filename}' as a fallback.")
     else:
-        logging.warning(f"Font file '{font_name}' not found. PDF may not display non-Latin characters correctly.")
-
+        logging.warning(f"No specific font found for language '{language}'. PDF may not display non-Latin characters correctly.")
+        
     story.append(Paragraph(f"<b>{title}</b>", styles['Heading1']))
     story.append(Spacer(1, 12))
     
@@ -350,10 +390,11 @@ def handle_learn_download_request(chat_id, incoming_msg, user_state, state):
     if incoming_msg.lower() == "yes":
         notes_text = state.get("full_notes", "")
         topic = state.get("topic", "notes")
+        language = state.get("language", "english")
         
         if notes_text:
             send_message(chat_id, "Generating your notes as a PDF... 📄")
-            pdf_data = create_pdf_notes(topic, notes_text)
+            pdf_data = create_pdf_notes(topic, notes_text, language)
             send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
                           caption=f"Here are your downloadable notes for {topic}!")
         else:
@@ -424,5 +465,6 @@ if __name__ == "__main__":
     else:
         logging.error("WEBHOOK_URL environment variable is not set. Webhook will not be configured.")
 
+    load_fonts()  # Load fonts at startup
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
