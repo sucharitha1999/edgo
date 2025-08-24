@@ -52,11 +52,10 @@ FONT_MAPPINGS = {
     # Add new languages and their corresponding font filenames here.
     # The filename should exactly match the .ttf file in the 'languages' folder.
     "english": "NotoSans-Regular.ttf",
-    #"hindi": "NotoSans-Regular.ttf",
     "telugu": "NotoSansTelugu.ttf",
     "kannada": "NotoSansKannada.ttf",
     "tamil": "NotoSansTamil.ttf",
-    "malayalam": "NotoSansMalayalam.ttf",
+    "malayalam": "NotoSansMalyalam.ttf",
     # Add more mappings as needed, e.g., "bengali": "NotoSansBengali-Regular.ttf"
 }
 
