@@ -43,7 +43,6 @@ STATE_LEARN_TOPIC = "learn_topic"
 STATE_LEARN_LANGUAGE = "learn_language"
 STATE_LEARN_DOWNLOAD = "learn_download"
 STATE_MCQ_TOPIC = "mcq_topic"
-STATE_GLOBAL_OPTION = "global_option"
 
 
 # -------------------- API Client Functions --------------------
@@ -227,8 +226,7 @@ def handle_message(chat_id, incoming_msg, state, user_state):
             "Hi! 👋 What would you like help with today?\n\n"
             "*Reply with a number:*\n"
             "1️⃣ Learn about a topic\n"
-            "2️⃣ Test your knowledge with MCQs\n"
-            "3️⃣ Explore a cultural and language exchange"
+            "2️⃣ Test your knowledge with MCQs"
         )
         user_state[chat_id] = {"step": STATE_MENU}
         return
@@ -251,9 +249,6 @@ def handle_message(chat_id, incoming_msg, state, user_state):
     elif state.get("step") == STATE_MCQ_TOPIC:
         handle_mcq_request(chat_id, incoming_msg, user_state)
     
-    elif state.get("step") == STATE_GLOBAL_OPTION:
-        handle_global_option_request(chat_id, incoming_msg, user_state)
-
     else:
         send_message(chat_id, "I'm not sure what you mean. Say 'hi edgo' to get started. 😊")
 
@@ -265,12 +260,8 @@ def handle_menu_selection(chat_id, incoming_msg, user_state):
     elif incoming_msg == "2":
         user_state[chat_id] = {"step": STATE_MCQ_TOPIC}
         send_message(chat_id, "📝 What topic would you like a quiz on?")
-    elif incoming_msg == "3":
-        user_state[chat_id] = {"step": STATE_GLOBAL_OPTION}
-        send_message(chat_id, "🌍 This feature is still under development, but it will help you connect with learners from different cultures to practice languages and share knowledge. Come back soon for updates!")
-        user_state.pop(chat_id, None)
     else:
-        send_message(chat_id, "Please enter a valid option: 1, 2 or 3.")
+        send_message(chat_id, "Please enter a valid option: 1 or 2.")
 
 def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
     """
@@ -282,7 +273,7 @@ def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
     state["language"] = language
     
     prompt = (
-        f"Act as a friendly tutor for Indian NCERT textbooks. "
+        f"Act as a friendly and knowledgeable tutor for all educational topics. "
         f"Your goal is to simplify and explain the following topic for a student in a simple and clear manner:\n\n"
         f"Topic: {topic}\n\n"
         f"Please provide a detailed, explanation in {language} in simple language using **Markdown bullet points**."
@@ -349,14 +340,6 @@ def handle_mcq_request(chat_id, incoming_msg, user_state):
         send_message(chat_id, "❌ Couldn't generate the MCQs. Try again later.")
     user_state.pop(chat_id, None)
 
-def handle_global_option_request(chat_id, incoming_msg, user_state):
-    """
-    Handles the new "Globalizing Education" option. This is a placeholder for future
-    development.
-    """
-    send_message(chat_id, "🌍 This feature is still under development, but it will help you connect with learners from different cultures to practice languages and share knowledge. Come back soon for updates!")
-    user_state.pop(chat_id, None)
-
 
 # -------------------- Routes --------------------
 
@@ -398,4 +381,4 @@ if __name__ == "__main__":
         logging.error("WEBHOOK_URL environment variable is not set. Webhook will not be configured.")
 
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.00", port=port)
