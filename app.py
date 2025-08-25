@@ -38,9 +38,9 @@ TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent"
 
 # Constants for conversation states
+STATE_INITIAL_LANGUAGE_SELECTION = "initial_language_selection"
 STATE_MENU = "menu"
 STATE_LEARN_TOPIC = "learn_topic"
-STATE_LEARN_LANGUAGE = "learn_language"
 STATE_LEARN_DOWNLOAD = "learn_download"
 STATE_MCQ_TOPIC = "mcq_topic"
 
@@ -117,6 +117,14 @@ def call_gemini(prompt):
 
 
 # -------------------- Utility Functions --------------------
+
+def translate_text(text, target_language):
+    """
+    Translates text to the target language using the Gemini API.
+    """
+    prompt = f"Translate the following text to {target_language}. Just provide the translated text, nothing else.\n\nText: {text}"
+    translated = call_gemini(prompt)
+    return translated if translated else text
 
 def set_webhook():
     """Sets the Telegram webhook for the bot."""
@@ -222,13 +230,32 @@ def handle_message(chat_id, incoming_msg, state, user_state):
     Main handler function that routes messages based on the user's state.
     """
     if incoming_msg.lower() == "hi edgo":
-        send_message(chat_id,
-            "Hi! 👋 What would you like help with today?\n\n"
-            "*Reply with a number:*\n"
-            "1️⃣ Learn about a topic\n"
-            "2️⃣ Test your knowledge with MCQs"
+        welcome_text = "Hi! 👋 To get started, please tell me your preferred language (e.g., English, Hindi, Spanish)."
+        send_message(chat_id, welcome_text)
+        user_state[chat_id] = {"step": STATE_INITIAL_LANGUAGE_SELECTION}
+        return
+
+    language = user_state.get(chat_id, {}).get("language", "English")
+
+    if state.get("step") == STATE_INITIAL_LANGUAGE_SELECTION:
+        user_state[chat_id]["language"] = incoming_msg.strip().capitalize()
+        language = user_state[chat_id]["language"]
+        
+        menu_intro_en = "Great! I will provide all explanations in {}.\n\nWhat would you like help with today?\n\n*Reply with a number:*"
+        menu_option_1_en = "1️⃣ Learn about a topic"
+        menu_option_2_en = "2️⃣ Test your knowledge with MCQs"
+        
+        menu_intro_translated = translate_text(menu_intro_en.format(language), language)
+        menu_option_1_translated = translate_text(menu_option_1_en, language)
+        menu_option_2_translated = translate_text(menu_option_2_en, language)
+        
+        menu_text = (
+            f"{menu_intro_translated}\n\n"
+            f"{menu_option_1_translated}\n"
+            f"{menu_option_2_translated}"
         )
-        user_state[chat_id] = {"step": STATE_MENU}
+        send_message(chat_id, menu_text)
+        user_state[chat_id]["step"] = STATE_MENU
         return
 
     if state.get("step") == STATE_MENU:
@@ -236,11 +263,6 @@ def handle_message(chat_id, incoming_msg, state, user_state):
         return
 
     if state.get("step") == STATE_LEARN_TOPIC:
-        state["topic"] = incoming_msg
-        state["step"] = STATE_LEARN_LANGUAGE
-        send_message(chat_id, "🌐 What language would you like the explanation in? (e.g., English, Hindi, Spanish)")
-    
-    elif state.get("step") == STATE_LEARN_LANGUAGE:
         handle_learn_topic_request(chat_id, incoming_msg, user_state, state)
         
     elif state.get("step") == STATE_LEARN_DOWNLOAD:
@@ -250,27 +272,32 @@ def handle_message(chat_id, incoming_msg, state, user_state):
         handle_mcq_request(chat_id, incoming_msg, user_state)
     
     else:
-        send_message(chat_id, "I'm not sure what you mean. Say 'hi edgo' to get started. 😊")
+        unknown_command_text = translate_text("I'm not sure what you mean. Say 'hi edgo' to get started. 😊", language)
+        send_message(chat_id, unknown_command_text)
 
 def handle_menu_selection(chat_id, incoming_msg, user_state):
     """Handles the user's choice from the main menu."""
+    language = user_state.get(chat_id, {}).get("language", "English")
     if incoming_msg == "1":
-        user_state[chat_id] = {"step": STATE_LEARN_TOPIC}
-        send_message(chat_id, "📚 What topic would you like to learn about?")
+        user_state[chat_id]["step"] = STATE_LEARN_TOPIC
+        learn_prompt = translate_text("What topic would you like to learn about?", language)
+        send_message(chat_id, f"📚 {learn_prompt}")
     elif incoming_msg == "2":
-        user_state[chat_id] = {"step": STATE_MCQ_TOPIC}
-        send_message(chat_id, "📝 What topic would you like a quiz on?")
+        user_state[chat_id]["step"] = STATE_MCQ_TOPIC
+        mcq_prompt = translate_text("What topic would you like a quiz on?", language)
+        send_message(chat_id, f"📝 {mcq_prompt}")
     else:
-        send_message(chat_id, "Please enter a valid option: 1 or 2.")
+        invalid_option_text = translate_text("Please enter a valid option: 1 or 2.", language)
+        send_message(chat_id, invalid_option_text)
 
 def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
     """
     Generates a detailed explanation with external resources
     and prompts the user for a downloadable file.
     """
-    topic = state.get("topic")
-    language = incoming_msg
-    state["language"] = language
+    topic = incoming_msg
+    language = state.get("language", "English")
+    state["topic"] = topic
     
     prompt = (
         f"Act as a friendly and knowledgeable tutor for all educational topics. "
@@ -282,60 +309,72 @@ def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
         f"2. **Watch and Learn** with links to relevant YouTube videos."
     )
     
-    send_message(chat_id, "Finding and explaining the topic for you... ⏳")
+    search_message = translate_text("Finding and explaining the topic for you... ⏳", language)
+    send_message(chat_id, search_message)
     response = call_gemini(prompt)
     
     if response:
         state["full_notes"] = response
         formatted_response = format_bullet_points(response)
-        send_message(chat_id, f"📘 Here's the explanation of '{topic}':")
+        notes_intro_translated = translate_text("Here's the explanation of '{}':", language).format(topic)
+        send_message(chat_id, f"📘 {notes_intro_translated}")
         for chunk in split_message(formatted_response):
             send_message(chat_id, chunk)
 
-        send_message(chat_id,
-            "Would you like to get a downloadable PDF of these notes?\n"
-            "Reply with 'Yes' to get them."
-        )
+        download_prompt = translate_text("Would you like to get a downloadable PDF of these notes?\nReply with 'Yes' to get them.", language)
+        send_message(chat_id, download_prompt)
         user_state[chat_id]["step"] = STATE_LEARN_DOWNLOAD
     else:
-        send_message(chat_id, "❌ Couldn't fetch learning content right now.")
+        fetch_error = translate_text("Couldn't fetch learning content right now.", language)
+        send_message(chat_id, f"❌ {fetch_error}")
         user_state.pop(chat_id, None)
 
 def handle_learn_download_request(chat_id, incoming_msg, user_state, state):
     """Handles the user's request for a downloadable PDF."""
-    if incoming_msg.lower() == "yes":
+    language = user_state.get(chat_id, {}).get("language", "English")
+    yes_translated = translate_text("yes", language)
+    if incoming_msg.lower() == yes_translated.lower():
         notes_text = state.get("full_notes", "")
         topic = state.get("topic", "notes")
         
         if notes_text:
-            send_message(chat_id, "Generating your notes as a PDF... 📄")
+            download_success = translate_text("Generating your notes as a PDF... 📄", language)
+            send_message(chat_id, download_success)
             pdf_data = create_pdf_notes(topic, notes_text)
+            document_caption_translated = translate_text("Here are your downloadable notes for {}!", language).format(topic)
             send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
-                          caption=f"Here are your downloadable notes for {topic}!")
+                          caption=document_caption_translated)
         else:
-            send_message(chat_id, "❌ I'm sorry, I couldn't find the notes to download.")
+            no_notes_translated = translate_text("I'm sorry, I couldn't find the notes to download.", language)
+            send_message(chat_id, f"❌ {no_notes_translated}")
     else:
-        send_message(chat_id, "Okay, skipping the download. Let me know if you need anything else.")
+        skip_download_translated = translate_text("Okay, skipping the download. Let me know if you need anything else.", language)
+        send_message(chat_id, skip_download_translated)
     
     user_state.pop(chat_id, None)
 
 def handle_mcq_request(chat_id, incoming_msg, user_state):
     """Generates insightful MCQs and sends the solution."""
     topic = incoming_msg
+    language = user_state.get(chat_id, {}).get("language", "English")
+
     prompt = (
-        f"Create 5 challenging and insightful multiple-choice questions (MCQs) on the topic: '{topic}'.\n"
+        f"Create 5 challenging and insightful multiple-choice questions (MCQs) on the topic: '{topic}' in {language}.\n"
         f"For each question, provide 4 options (A, B, C, D).\n"
         f"Directly after each question, provide the correct answer and a brief, 1-2 line explanation of why it is correct.\n"
         f"Use Markdown to format the questions and answers clearly."
     )
-    send_message(chat_id, f"Generating an insightful quiz on '{topic}'... 🤔")
+    quiz_message = translate_text("Generating an insightful quiz on '{}'... 🤔", language).format(topic)
+    send_message(chat_id, quiz_message)
     response = call_gemini(prompt)
     if response:
-        send_message(chat_id, "🧠 Here's your quiz:")
+        quiz_intro = translate_text("Here's your quiz:", language)
+        send_message(chat_id, f"🧠 {quiz_intro}")
         for chunk in split_message(response):
             send_message(chat_id, chunk)
     else:
-        send_message(chat_id, "❌ Couldn't generate the MCQs. Try again later.")
+        quiz_error = translate_text("Couldn't generate the MCQs. Try again later.", language)
+        send_message(chat_id, f"❌ {quiz_error}")
     user_state.pop(chat_id, None)
 
 
@@ -365,7 +404,8 @@ def telegram_webhook():
 
     except Exception as e:
         logging.error("An error occurred during webhook processing: %s", e, exc_info=True)
-        send_message(chat_id, "❌ Sorry, something went wrong. Please try again later.")
+        unknown_error = "Sorry, something went wrong. Please try again later."
+        send_message(chat_id, f"❌ {unknown_error}")
 
     return "ok"
 
