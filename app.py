@@ -279,9 +279,7 @@ def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
         f"Please provide a detailed, explanation in {language} in simple language using **Markdown bullet points**."
         f"After the main explanation, provide two sections:\n"
         f"1. **Explore More** with links to relevant websites for deeper learning.\n"
-        f"2. **Watch and Learn** with links to relevant YouTube videos.\n"
-        f"If the topic is related to the Indian NCERT curriculum, please also include the following sentence at the very end of your response: "
-        f"\"You can find the official NCERT textbooks for all subjects at ncert.nic.in/ebooks.php.\"\n"
+        f"2. **Watch and Learn** with links to relevant YouTube videos."
     )
     
     send_message(chat_id, "Finding and explaining the topic for you... ⏳")
@@ -326,8 +324,8 @@ def handle_mcq_request(chat_id, incoming_msg, user_state):
     topic = incoming_msg
     prompt = (
         f"Create 5 challenging and insightful multiple-choice questions (MCQs) on the topic: '{topic}'.\n"
-        f"For each question, provide 4 options (A, B, C, D) and then, in a separate section, provide "
-        f"the correct answer and a brief, simple explanation of why it is correct.\n"
+        f"For each question, provide 4 options (A, B, C, D).\n"
+        f"Directly after each question, provide the correct answer and a brief, 1-2 line explanation of why it is correct.\n"
         f"Use Markdown to format the questions and answers clearly."
     )
     send_message(chat_id, f"Generating an insightful quiz on '{topic}'... 🤔")
