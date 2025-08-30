@@ -45,7 +45,8 @@ STATE_LEARN_TOPIC = "learn_topic"
 STATE_MCQ_TOPIC = "mcq_topic"
 STATE_LEARN_LANGUAGE_SELECTION = "learn_language_selection"
 STATE_MCQ_LANGUAGE_SELECTION = "mcq_language_selection"
-STATE_LEARN_DOWNLOAD = "learn_download"
+STATE_POST_LEARN = "post_learn"
+STATE_POST_QUIZ = "post_quiz" # New state for after the quiz
 
 # Static phrases to be translated
 PHRASES = {
@@ -56,18 +57,21 @@ PHRASES = {
     "invalid_option": "Please enter a valid option: 1 or 2.",
     "search_message": "Finding and explaining the topic for you... ⏳",
     "notes_intro": "📘 Here's the explanation of '{}':",
-    "download_prompt": "Would you like to get a downloadable PDF of these notes?\nReply with 'Yes' to get them.",
+    "post_learn_prompt": "Would you like a downloadable PDF of these notes or a quiz to test your knowledge?\n\nReply with 'PDF' or 'Quiz'.",
+    "post_quiz_prompt": "Would you like a downloadable PDF of the notes? Reply with 'Yes' to get them.", # New phrase
     "download_success": "Generating your notes as a PDF... 📄",
     "document_caption": "Here are your downloadable notes for {}!",
     "no_notes": "❌ I'm sorry, I couldn't find the notes to download.",
-    "skip_download": "Okay, skipping the download. Let me know if you need anything else.",
     "quiz_message": "Generating an insightful quiz on '{}'... 🤔",
     "quiz_intro": "🧠 Here's your quiz:",
-    "fetch_error": "❌ Couldn't fetch learning content right now.",
     "quiz_error": "❌ Couldn't generate the MCQs. Try again later.",
+    "fetch_error": "❌ Couldn't fetch learning content right now.",
     "unknown_error": "❌ Sorry, something went wrong. Please try again later.",
     "unknown_command": "I'm not sure what you mean. Say 'hi edgo' to get started. 😊",
-    "yes_word": "yes"
+    "pdf_word": "pdf",
+    "quiz_word": "quiz",
+    "yes_word": "yes",
+    "end_conversation": "Okay, let me know if you need anything else! 😊"
 }
 
 # Initialize a global translator instance
@@ -270,8 +274,12 @@ def handle_message(chat_id, incoming_msg, state, user_state):
         handle_learn_topic_request(chat_id, user_state, state)
         return
     
-    elif state.get("step") == STATE_LEARN_DOWNLOAD:
-        handle_learn_download_request(chat_id, incoming_msg, user_state, state)
+    elif state.get("step") == STATE_POST_LEARN:
+        handle_post_learn_request(chat_id, incoming_msg, user_state, state)
+        return
+
+    elif state.get("step") == STATE_POST_QUIZ:
+        handle_post_quiz_request(chat_id, incoming_msg, user_state, state)
         return
 
     elif state.get("step") == STATE_MCQ_TOPIC:
@@ -328,17 +336,47 @@ def handle_learn_topic_request(chat_id, user_state, state):
         for chunk in split_message(formatted_response):
             send_message(chat_id, chunk)
 
-        send_message(chat_id, get_translated_phrase("English", "download_prompt"))
-        user_state[chat_id]["step"] = STATE_LEARN_DOWNLOAD
+        send_message(chat_id, get_translated_phrase("English", "post_learn_prompt"))
+        user_state[chat_id]["step"] = STATE_POST_LEARN
     else:
         send_message(chat_id, get_translated_phrase("English", "fetch_error"))
         user_state.pop(chat_id, None)
 
-def handle_learn_download_request(chat_id, incoming_msg, user_state, state):
-    """Handles the user's request for a downloadable PDF."""
-    language = user_state.get(chat_id, {}).get("language", "English")
-    yes_word = get_translated_phrase(language, "yes_word")
-    if incoming_msg.lower() == yes_word.lower():
+def handle_post_learn_request(chat_id, incoming_msg, user_state, state):
+    """Handles the user's request for either a PDF or an MCQ quiz."""
+    language = state.get("language", "English")
+    
+    # Check for translated versions of "PDF" and "Quiz"
+    pdf_word = get_translated_phrase(language, "pdf_word").lower()
+    quiz_word = get_translated_phrase(language, "quiz_word").lower()
+    
+    if incoming_msg.lower() == pdf_word:
+        notes_text = state.get("full_notes", "")
+        topic = state.get("topic", "notes")
+        
+        if notes_text:
+            send_message(chat_id, get_translated_phrase("English", "download_success"))
+            pdf_data = create_pdf_notes(topic, notes_text)
+            send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
+                          caption=get_translated_phrase("English", "document_caption").format(topic))
+        else:
+            send_message(chat_id, get_translated_phrase("English", "no_notes"))
+        
+        user_state.pop(chat_id, None)
+
+    elif incoming_msg.lower() == quiz_word:
+        handle_mcq_request(chat_id, user_state, state)
+
+    else:
+        send_message(chat_id, "Please reply with 'PDF' or 'Quiz'.")
+        user_state.pop(chat_id, None)
+
+def handle_post_quiz_request(chat_id, incoming_msg, user_state, state):
+    """Handles the user's request for a PDF after completing the quiz."""
+    language = state.get("language", "English")
+    yes_word = get_translated_phrase(language, "yes_word").lower()
+
+    if incoming_msg.lower() == yes_word:
         notes_text = state.get("full_notes", "")
         topic = state.get("topic", "notes")
         
@@ -350,12 +388,12 @@ def handle_learn_download_request(chat_id, incoming_msg, user_state, state):
         else:
             send_message(chat_id, get_translated_phrase("English", "no_notes"))
     else:
-        send_message(chat_id, get_translated_phrase("English", "skip_download"))
+        send_message(chat_id, get_translated_phrase("English", "end_conversation"))
     
     user_state.pop(chat_id, None)
 
 def handle_mcq_request(chat_id, user_state, state):
-    """Generates insightful MCQs and sends the solution."""
+    """Generates insightful MCQs and sends the solution, then prompts for PDF."""
     topic = state.get("topic")
     language = state.get("language", "English")
 
@@ -371,9 +409,12 @@ def handle_mcq_request(chat_id, user_state, state):
         send_message(chat_id, get_translated_phrase("English", "quiz_intro"))
         for chunk in split_message(response):
             send_message(chat_id, chunk)
+        
+        send_message(chat_id, get_translated_phrase("English", "post_quiz_prompt"))
+        user_state[chat_id]["step"] = STATE_POST_QUIZ
     else:
         send_message(chat_id, get_translated_phrase("English", "quiz_error"))
-    user_state.pop(chat_id, None)
+        user_state.pop(chat_id, None)
 
 
 # -------------------- Routes --------------------
