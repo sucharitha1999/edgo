@@ -2,8 +2,9 @@
 # The main application file for the Telegram bot, with all functions consolidated.
 
 # To resolve the 'reportlab' error, make sure you have a requirements.txt file
-# in your project's root directory that includes the following line:
+# in your project's root directory that includes the following lines:
 # reportlab
+# googletrans
 
 from flask import Flask, request
 from dotenv import load_dotenv
@@ -18,6 +19,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from googletrans import Translator
 
 # Set up logging for better debugging
 logging.basicConfig(level=logging.INFO,
@@ -43,6 +45,34 @@ STATE_MENU = "menu"
 STATE_LEARN_TOPIC = "learn_topic"
 STATE_LEARN_DOWNLOAD = "learn_download"
 STATE_MCQ_TOPIC = "mcq_topic"
+
+# Static phrases to be translated
+PHRASES = {
+    "welcome": "Hi! 👋 To get started, please tell me your preferred language (e.g., English, Hindi, Spanish).",
+    "menu_intro": "Great! I will provide all explanations in {}.\n\nWhat would you like help with today?\n\n*Reply with a number:*",
+    "menu_option_1": "1️⃣ Learn about a topic",
+    "menu_option_2": "2️⃣ Test your knowledge with MCQs",
+    "learn_prompt": "📚 What topic would you like to learn about?",
+    "mcq_prompt": "📝 What topic would you like a quiz on?",
+    "invalid_option": "Please enter a valid option: 1 or 2.",
+    "search_message": "Finding and explaining the topic for you... ⏳",
+    "notes_intro": "📘 Here's the explanation of '{}':",
+    "download_prompt": "Would you like to get a downloadable PDF of these notes?\nReply with 'Yes' to get them.",
+    "download_success": "Generating your notes as a PDF... 📄",
+    "document_caption": "Here are your downloadable notes for {}!",
+    "no_notes": "❌ I'm sorry, I couldn't find the notes to download.",
+    "skip_download": "Okay, skipping the download. Let me know if you need anything else.",
+    "quiz_message": "Generating an insightful quiz on '{}'... 🤔",
+    "quiz_intro": "🧠 Here's your quiz:",
+    "fetch_error": "❌ Couldn't fetch learning content right now.",
+    "quiz_error": "❌ Couldn't generate the MCQs. Try again later.",
+    "unknown_error": "❌ Sorry, something went wrong. Please try again later.",
+    "unknown_command": "I'm not sure what you mean. Say 'hi edgo' to get started. 😊",
+    "yes_word": "yes"
+}
+
+# Initialize a global translator instance
+translator = Translator()
 
 
 # -------------------- API Client Functions --------------------
@@ -118,13 +148,21 @@ def call_gemini(prompt):
 
 # -------------------- Utility Functions --------------------
 
-def translate_text(text, target_language):
+def get_translated_phrase(language, key):
     """
-    Translates text to the target language using the Gemini API.
+    Translates a key's phrase to the specified language.
+    If translation fails or is for English, returns the original phrase.
     """
-    prompt = f"Translate the following text to {target_language}. Just provide the translated text, nothing else.\n\nText: {text}"
-    translated = call_gemini(prompt)
-    return translated if translated else text
+    phrase = PHRASES.get(key, "")
+    if not phrase or language.lower() == "english":
+        return phrase
+    
+    try:
+        translated = translator.translate(phrase, dest=language).text
+        return translated
+    except Exception as e:
+        logging.error(f"Translation failed for '{phrase}' to '{language}': {e}")
+        return phrase
 
 def set_webhook():
     """Sets the Telegram webhook for the bot."""
@@ -230,8 +268,7 @@ def handle_message(chat_id, incoming_msg, state, user_state):
     Main handler function that routes messages based on the user's state.
     """
     if incoming_msg.lower() == "hi edgo":
-        welcome_text = "Hi! 👋 To get started, please tell me your preferred language (e.g., English, Hindi, Spanish)."
-        send_message(chat_id, welcome_text)
+        send_message(chat_id, get_translated_phrase("English", "welcome"))
         user_state[chat_id] = {"step": STATE_INITIAL_LANGUAGE_SELECTION}
         return
 
@@ -240,19 +277,11 @@ def handle_message(chat_id, incoming_msg, state, user_state):
     if state.get("step") == STATE_INITIAL_LANGUAGE_SELECTION:
         user_state[chat_id]["language"] = incoming_msg.strip().capitalize()
         language = user_state[chat_id]["language"]
-        
-        menu_intro_en = "Great! I will provide all explanations in {}.\n\nWhat would you like help with today?\n\n*Reply with a number:*"
-        menu_option_1_en = "1️⃣ Learn about a topic"
-        menu_option_2_en = "2️⃣ Test your knowledge with MCQs"
-        
-        menu_intro_translated = translate_text(menu_intro_en.format(language), language)
-        menu_option_1_translated = translate_text(menu_option_1_en, language)
-        menu_option_2_translated = translate_text(menu_option_2_en, language)
-        
+        menu_intro = get_translated_phrase(language, "menu_intro").format(language)
         menu_text = (
-            f"{menu_intro_translated}\n\n"
-            f"{menu_option_1_translated}\n"
-            f"{menu_option_2_translated}"
+            f"{menu_intro}\n\n"
+            f"{get_translated_phrase(language, 'menu_option_1')}\n"
+            f"{get_translated_phrase(language, 'menu_option_2')}"
         )
         send_message(chat_id, menu_text)
         user_state[chat_id]["step"] = STATE_MENU
@@ -272,23 +301,19 @@ def handle_message(chat_id, incoming_msg, state, user_state):
         handle_mcq_request(chat_id, incoming_msg, user_state)
     
     else:
-        unknown_command_text = translate_text("I'm not sure what you mean. Say 'hi edgo' to get started. 😊", language)
-        send_message(chat_id, unknown_command_text)
+        send_message(chat_id, get_translated_phrase(language, "unknown_command"))
 
 def handle_menu_selection(chat_id, incoming_msg, user_state):
     """Handles the user's choice from the main menu."""
     language = user_state.get(chat_id, {}).get("language", "English")
     if incoming_msg == "1":
         user_state[chat_id]["step"] = STATE_LEARN_TOPIC
-        learn_prompt = translate_text("What topic would you like to learn about?", language)
-        send_message(chat_id, f"📚 {learn_prompt}")
+        send_message(chat_id, get_translated_phrase(language, "learn_prompt"))
     elif incoming_msg == "2":
         user_state[chat_id]["step"] = STATE_MCQ_TOPIC
-        mcq_prompt = translate_text("What topic would you like a quiz on?", language)
-        send_message(chat_id, f"📝 {mcq_prompt}")
+        send_message(chat_id, get_translated_phrase(language, "mcq_prompt"))
     else:
-        invalid_option_text = translate_text("Please enter a valid option: 1 or 2.", language)
-        send_message(chat_id, invalid_option_text)
+        send_message(chat_id, get_translated_phrase(language, "invalid_option"))
 
 def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
     """
@@ -309,47 +334,39 @@ def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
         f"2. **Watch and Learn** with links to relevant YouTube videos."
     )
     
-    search_message = translate_text("Finding and explaining the topic for you... ⏳", language)
-    send_message(chat_id, search_message)
+    send_message(chat_id, get_translated_phrase(language, "search_message"))
     response = call_gemini(prompt)
     
     if response:
         state["full_notes"] = response
         formatted_response = format_bullet_points(response)
-        notes_intro_translated = translate_text("Here's the explanation of '{}':", language).format(topic)
-        send_message(chat_id, f"📘 {notes_intro_translated}")
+        send_message(chat_id, get_translated_phrase(language, "notes_intro").format(topic))
         for chunk in split_message(formatted_response):
             send_message(chat_id, chunk)
 
-        download_prompt = translate_text("Would you like to get a downloadable PDF of these notes?\nReply with 'Yes' to get them.", language)
-        send_message(chat_id, download_prompt)
+        send_message(chat_id, get_translated_phrase(language, "download_prompt"))
         user_state[chat_id]["step"] = STATE_LEARN_DOWNLOAD
     else:
-        fetch_error = translate_text("Couldn't fetch learning content right now.", language)
-        send_message(chat_id, f"❌ {fetch_error}")
+        send_message(chat_id, get_translated_phrase(language, "fetch_error"))
         user_state.pop(chat_id, None)
 
 def handle_learn_download_request(chat_id, incoming_msg, user_state, state):
     """Handles the user's request for a downloadable PDF."""
     language = user_state.get(chat_id, {}).get("language", "English")
-    yes_translated = translate_text("yes", language)
-    if incoming_msg.lower() == yes_translated.lower():
+    yes_word = get_translated_phrase(language, "yes_word")
+    if incoming_msg.lower() == yes_word.lower():
         notes_text = state.get("full_notes", "")
         topic = state.get("topic", "notes")
         
         if notes_text:
-            download_success = translate_text("Generating your notes as a PDF... 📄", language)
-            send_message(chat_id, download_success)
+            send_message(chat_id, get_translated_phrase(language, "download_success"))
             pdf_data = create_pdf_notes(topic, notes_text)
-            document_caption_translated = translate_text("Here are your downloadable notes for {}!", language).format(topic)
             send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
-                          caption=document_caption_translated)
+                          caption=get_translated_phrase(language, "document_caption").format(topic))
         else:
-            no_notes_translated = translate_text("I'm sorry, I couldn't find the notes to download.", language)
-            send_message(chat_id, f"❌ {no_notes_translated}")
+            send_message(chat_id, get_translated_phrase(language, "no_notes"))
     else:
-        skip_download_translated = translate_text("Okay, skipping the download. Let me know if you need anything else.", language)
-        send_message(chat_id, skip_download_translated)
+        send_message(chat_id, get_translated_phrase(language, "skip_download"))
     
     user_state.pop(chat_id, None)
 
@@ -364,17 +381,14 @@ def handle_mcq_request(chat_id, incoming_msg, user_state):
         f"Directly after each question, provide the correct answer and a brief, 1-2 line explanation of why it is correct.\n"
         f"Use Markdown to format the questions and answers clearly."
     )
-    quiz_message = translate_text("Generating an insightful quiz on '{}'... 🤔", language).format(topic)
-    send_message(chat_id, quiz_message)
+    send_message(chat_id, get_translated_phrase(language, "quiz_message").format(topic))
     response = call_gemini(prompt)
     if response:
-        quiz_intro = translate_text("Here's your quiz:", language)
-        send_message(chat_id, f"🧠 {quiz_intro}")
+        send_message(chat_id, get_translated_phrase(language, "quiz_intro"))
         for chunk in split_message(response):
             send_message(chat_id, chunk)
     else:
-        quiz_error = translate_text("Couldn't generate the MCQs. Try again later.", language)
-        send_message(chat_id, f"❌ {quiz_error}")
+        send_message(chat_id, get_translated_phrase(language, "quiz_error"))
     user_state.pop(chat_id, None)
 
 
@@ -404,8 +418,7 @@ def telegram_webhook():
 
     except Exception as e:
         logging.error("An error occurred during webhook processing: %s", e, exc_info=True)
-        unknown_error = "Sorry, something went wrong. Please try again later."
-        send_message(chat_id, f"❌ {unknown_error}")
+        send_message(chat_id, get_translated_phrase("English", "unknown_error"))
 
     return "ok"
 
@@ -419,4 +432,4 @@ if __name__ == "__main__":
         logging.error("WEBHOOK_URL environment variable is not set. Webhook will not be configured.")
 
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.00", port=port)
+    app.run(host="0.0.0.0", port=port)
