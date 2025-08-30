@@ -40,20 +40,18 @@ TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent"
 
 # Constants for conversation states
-STATE_INITIAL_LANGUAGE_SELECTION = "initial_language_selection"
 STATE_MENU = "menu"
 STATE_LEARN_TOPIC = "learn_topic"
-STATE_LEARN_DOWNLOAD = "learn_download"
 STATE_MCQ_TOPIC = "mcq_topic"
+STATE_LEARN_LANGUAGE_SELECTION = "learn_language_selection"
+STATE_MCQ_LANGUAGE_SELECTION = "mcq_language_selection"
 
 # Static phrases to be translated
 PHRASES = {
-    "welcome": "Hi! 👋 To get started, please tell me your preferred language (e.g., English, Hindi, Spanish).",
-    "menu_intro": "Great! I will provide all explanations in {}.\n\nWhat would you like help with today?\n\n*Reply with a number:*",
-    "menu_option_1": "1️⃣ Learn about a topic",
-    "menu_option_2": "2️⃣ Test your knowledge with MCQs",
+    "welcome": "Hi! 👋 What would you like help with today?\n\n*Reply with a number:*\n1️⃣ Learn about a topic\n2️⃣ Test your knowledge with MCQs",
     "learn_prompt": "📚 What topic would you like to learn about?",
     "mcq_prompt": "📝 What topic would you like a quiz on?",
+    "language_prompt": "Great choice! Now, please tell me the language you want to learn in (e.g., English, Hindi, Spanish).",
     "invalid_option": "Please enter a valid option: 1 or 2.",
     "search_message": "Finding and explaining the topic for you... ⏳",
     "notes_intro": "📘 Here's the explanation of '{}':",
@@ -185,12 +183,10 @@ def split_message(text, chunk_size=1400):
     while start < len(text):
         end = min(start + chunk_size, len(text))
         if end < len(text) and text[end] not in (' ', '\n', '\t'):
-            # Find the last space or newline before the chunk end
             last_space = text.rfind(' ', start, end)
             if last_space != -1:
                 end = last_space
             else:
-                # If no space is found, break at the chunk size anyway
                 pass
         
         chunk = text[start:end].strip()
@@ -205,27 +201,14 @@ def format_bullet_points(text):
     Ensures bullet points are consistently formatted with a hyphen for better
     display on different chat clients.
     """
-    # Replace markdown list items starting with * with a hyphen
     lines = text.split('\n')
     formatted_lines = []
     for line in lines:
         if line.strip().startswith('* '):
-            # Change the prefix to a right-pointing arrow
             formatted_lines.append('➤ ' + line.strip()[2:])
         else:
             formatted_lines.append(line)
     return '\n'.join(formatted_lines)
-
-def find_font_path(font_name="NotoSans-Regular.ttf"):
-    """
-    Tries to find the font file in the current directory.
-    Returns the full path if found, otherwise returns None.
-    """
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    font_path = os.path.join(current_dir, font_name)
-    if os.path.exists(font_path):
-        return font_path
-    return None
 
 def create_pdf_notes(title, content):
     """
@@ -239,18 +222,16 @@ def create_pdf_notes(title, content):
 
     # Attempt to register a Unicode-supporting font
     font_name = "NotoSans-Regular.ttf"
-    font_path = find_font_path(font_name)
-    if font_path:
-        pdfmetrics.registerFont(TTFont('NotoSans', font_path))
+    try:
+        pdfmetrics.registerFont(TTFont('NotoSans', font_name))
         styles['Normal'].fontName = 'NotoSans'
         styles['Heading1'].fontName = 'NotoSans'
-    else:
-        logging.warning(f"Font file '{font_name}' not found. PDF may not display non-Latin characters correctly.")
+    except Exception as e:
+        logging.warning(f"Font file '{font_name}' not found. PDF may not display non-Latin characters correctly. Error: {e}")
 
     story.append(Paragraph(f"<b>{title}</b>", styles['Heading1']))
     story.append(Spacer(1, 12))
     
-    # Replace markdown bullet points with a standard Unicode character
     pdf_content = content.replace('* ', '\n\u2022 ').replace('**', '')
     for line in pdf_content.split('\n'):
         story.append(Paragraph(line, styles['Normal']))
@@ -269,22 +250,7 @@ def handle_message(chat_id, incoming_msg, state, user_state):
     """
     if incoming_msg.lower() == "hi edgo":
         send_message(chat_id, get_translated_phrase("English", "welcome"))
-        user_state[chat_id] = {"step": STATE_INITIAL_LANGUAGE_SELECTION}
-        return
-
-    language = user_state.get(chat_id, {}).get("language", "English")
-
-    if state.get("step") == STATE_INITIAL_LANGUAGE_SELECTION:
-        user_state[chat_id]["language"] = incoming_msg.strip().capitalize()
-        language = user_state[chat_id]["language"]
-        menu_intro = get_translated_phrase(language, "menu_intro").format(language)
-        menu_text = (
-            f"{menu_intro}\n\n"
-            f"{get_translated_phrase(language, 'menu_option_1')}\n"
-            f"{get_translated_phrase(language, 'menu_option_2')}"
-        )
-        send_message(chat_id, menu_text)
-        user_state[chat_id]["step"] = STATE_MENU
+        user_state[chat_id] = {"step": STATE_MENU}
         return
 
     if state.get("step") == STATE_MENU:
@@ -292,37 +258,50 @@ def handle_message(chat_id, incoming_msg, state, user_state):
         return
 
     if state.get("step") == STATE_LEARN_TOPIC:
-        handle_learn_topic_request(chat_id, incoming_msg, user_state, state)
+        user_state[chat_id]["topic"] = incoming_msg.strip()
+        send_message(chat_id, get_translated_phrase("English", "language_prompt"))
+        user_state[chat_id]["step"] = STATE_LEARN_LANGUAGE_SELECTION
+        return
         
-    elif state.get("step") == STATE_LEARN_DOWNLOAD:
-        handle_learn_download_request(chat_id, incoming_msg, user_state, state)
+    elif state.get("step") == STATE_LEARN_LANGUAGE_SELECTION:
+        language = incoming_msg.strip().capitalize()
+        user_state[chat_id]["language"] = language
+        handle_learn_topic_request(chat_id, user_state, state)
+        return
 
     elif state.get("step") == STATE_MCQ_TOPIC:
-        handle_mcq_request(chat_id, incoming_msg, user_state)
-    
+        user_state[chat_id]["topic"] = incoming_msg.strip()
+        send_message(chat_id, get_translated_phrase("English", "language_prompt"))
+        user_state[chat_id]["step"] = STATE_MCQ_LANGUAGE_SELECTION
+        return
+
+    elif state.get("step") == STATE_MCQ_LANGUAGE_SELECTION:
+        language = incoming_msg.strip().capitalize()
+        user_state[chat_id]["language"] = language
+        handle_mcq_request(chat_id, user_state, state)
+        return
+
     else:
-        send_message(chat_id, get_translated_phrase(language, "unknown_command"))
+        send_message(chat_id, get_translated_phrase("English", "unknown_command"))
 
 def handle_menu_selection(chat_id, incoming_msg, user_state):
     """Handles the user's choice from the main menu."""
-    language = user_state.get(chat_id, {}).get("language", "English")
     if incoming_msg == "1":
         user_state[chat_id]["step"] = STATE_LEARN_TOPIC
-        send_message(chat_id, get_translated_phrase(language, "learn_prompt"))
+        send_message(chat_id, get_translated_phrase("English", "learn_prompt"))
     elif incoming_msg == "2":
         user_state[chat_id]["step"] = STATE_MCQ_TOPIC
-        send_message(chat_id, get_translated_phrase(language, "mcq_prompt"))
+        send_message(chat_id, get_translated_phrase("English", "mcq_prompt"))
     else:
-        send_message(chat_id, get_translated_phrase(language, "invalid_option"))
+        send_message(chat_id, get_translated_phrase("English", "invalid_option"))
 
-def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
+def handle_learn_topic_request(chat_id, user_state, state):
     """
     Generates a detailed explanation with external resources
     and prompts the user for a downloadable file.
     """
-    topic = incoming_msg
+    topic = state.get("topic")
     language = state.get("language", "English")
-    state["topic"] = topic
     
     prompt = (
         f"Act as a friendly and knowledgeable tutor for all educational topics. "
@@ -334,20 +313,20 @@ def handle_learn_topic_request(chat_id, incoming_msg, user_state, state):
         f"2. **Watch and Learn** with links to relevant YouTube videos."
     )
     
-    send_message(chat_id, get_translated_phrase(language, "search_message"))
+    send_message(chat_id, get_translated_phrase("English", "search_message"))
     response = call_gemini(prompt)
     
     if response:
         state["full_notes"] = response
         formatted_response = format_bullet_points(response)
-        send_message(chat_id, get_translated_phrase(language, "notes_intro").format(topic))
+        send_message(chat_id, get_translated_phrase("English", "notes_intro").format(topic))
         for chunk in split_message(formatted_response):
             send_message(chat_id, chunk)
 
-        send_message(chat_id, get_translated_phrase(language, "download_prompt"))
-        user_state[chat_id]["step"] = STATE_LEARN_DOWNLOAD
+        send_message(chat_id, get_translated_phrase("English", "download_prompt"))
+        user_state[chat_id]["step"] = "learn_download"
     else:
-        send_message(chat_id, get_translated_phrase(language, "fetch_error"))
+        send_message(chat_id, get_translated_phrase("English", "fetch_error"))
         user_state.pop(chat_id, None)
 
 def handle_learn_download_request(chat_id, incoming_msg, user_state, state):
@@ -359,21 +338,21 @@ def handle_learn_download_request(chat_id, incoming_msg, user_state, state):
         topic = state.get("topic", "notes")
         
         if notes_text:
-            send_message(chat_id, get_translated_phrase(language, "download_success"))
+            send_message(chat_id, get_translated_phrase("English", "download_success"))
             pdf_data = create_pdf_notes(topic, notes_text)
             send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
-                          caption=get_translated_phrase(language, "document_caption").format(topic))
+                          caption=get_translated_phrase("English", "document_caption").format(topic))
         else:
-            send_message(chat_id, get_translated_phrase(language, "no_notes"))
+            send_message(chat_id, get_translated_phrase("English", "no_notes"))
     else:
-        send_message(chat_id, get_translated_phrase(language, "skip_download"))
+        send_message(chat_id, get_translated_phrase("English", "skip_download"))
     
     user_state.pop(chat_id, None)
 
-def handle_mcq_request(chat_id, incoming_msg, user_state):
+def handle_mcq_request(chat_id, user_state, state):
     """Generates insightful MCQs and sends the solution."""
-    topic = incoming_msg
-    language = user_state.get(chat_id, {}).get("language", "English")
+    topic = state.get("topic")
+    language = state.get("language", "English")
 
     prompt = (
         f"Create 5 challenging and insightful multiple-choice questions (MCQs) on the topic: '{topic}' in {language}.\n"
@@ -381,14 +360,14 @@ def handle_mcq_request(chat_id, incoming_msg, user_state):
         f"Directly after each question, provide the correct answer and a brief, 1-2 line explanation of why it is correct.\n"
         f"Use Markdown to format the questions and answers clearly."
     )
-    send_message(chat_id, get_translated_phrase(language, "quiz_message").format(topic))
+    send_message(chat_id, get_translated_phrase("English", "quiz_message").format(topic))
     response = call_gemini(prompt)
     if response:
-        send_message(chat_id, get_translated_phrase(language, "quiz_intro"))
+        send_message(chat_id, get_translated_phrase("English", "quiz_intro"))
         for chunk in split_message(response):
             send_message(chat_id, chunk)
     else:
-        send_message(chat_id, get_translated_phrase(language, "quiz_error"))
+        send_message(chat_id, get_translated_phrase("English", "quiz_error"))
     user_state.pop(chat_id, None)
 
 
