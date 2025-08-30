@@ -45,6 +45,7 @@ STATE_LEARN_TOPIC = "learn_topic"
 STATE_MCQ_TOPIC = "mcq_topic"
 STATE_LEARN_LANGUAGE_SELECTION = "learn_language_selection"
 STATE_MCQ_LANGUAGE_SELECTION = "mcq_language_selection"
+STATE_LEARN_DOWNLOAD = "learn_download"
 
 # Static phrases to be translated
 PHRASES = {
@@ -221,11 +222,11 @@ def create_pdf_notes(title, content):
     story = []
 
     # Attempt to register a Unicode-supporting font
-    font_name = "NotoSans-Regular.ttf"
+    font_name = "Vera.ttf"
     try:
-        pdfmetrics.registerFont(TTFont('NotoSans', font_name))
-        styles['Normal'].fontName = 'NotoSans'
-        styles['Heading1'].fontName = 'NotoSans'
+        pdfmetrics.registerFont(TTFont('Vera', font_name))
+        styles['Normal'].fontName = 'Vera'
+        styles['Heading1'].fontName = 'Vera'
     except Exception as e:
         logging.warning(f"Font file '{font_name}' not found. PDF may not display non-Latin characters correctly. Error: {e}")
 
@@ -267,6 +268,10 @@ def handle_message(chat_id, incoming_msg, state, user_state):
         language = incoming_msg.strip().capitalize()
         user_state[chat_id]["language"] = language
         handle_learn_topic_request(chat_id, user_state, state)
+        return
+    
+    elif state.get("step") == STATE_LEARN_DOWNLOAD:
+        handle_learn_download_request(chat_id, incoming_msg, user_state, state)
         return
 
     elif state.get("step") == STATE_MCQ_TOPIC:
@@ -324,7 +329,7 @@ def handle_learn_topic_request(chat_id, user_state, state):
             send_message(chat_id, chunk)
 
         send_message(chat_id, get_translated_phrase("English", "download_prompt"))
-        user_state[chat_id]["step"] = "learn_download"
+        user_state[chat_id]["step"] = STATE_LEARN_DOWNLOAD
     else:
         send_message(chat_id, get_translated_phrase("English", "fetch_error"))
         user_state.pop(chat_id, None)
