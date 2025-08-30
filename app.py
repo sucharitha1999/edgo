@@ -46,7 +46,7 @@ STATE_MCQ_TOPIC = "mcq_topic"
 STATE_LEARN_LANGUAGE_SELECTION = "learn_language_selection"
 STATE_MCQ_LANGUAGE_SELECTION = "mcq_language_selection"
 STATE_POST_LEARN = "post_learn"
-STATE_POST_QUIZ = "post_quiz" # New state for after the quiz
+STATE_POST_QUIZ = "post_quiz"
 
 # Static phrases to be translated
 PHRASES = {
@@ -58,7 +58,7 @@ PHRASES = {
     "search_message": "Finding and explaining the topic for you... ⏳",
     "notes_intro": "📘 Here's the explanation of '{}':",
     "post_learn_prompt": "Would you like a downloadable PDF of these notes or a quiz to test your knowledge?\n\nReply with 'PDF' or 'Quiz'.",
-    "post_quiz_prompt": "Would you like a downloadable PDF of the notes? Reply with 'Yes' to get them.", # New phrase
+    "post_quiz_prompt": "Would you like a downloadable PDF of the notes? Reply with 'Yes' to get them.",
     "download_success": "Generating your notes as a PDF... 📄",
     "document_caption": "Here are your downloadable notes for {}!",
     "no_notes": "❌ I'm sorry, I couldn't find the notes to download.",
@@ -71,12 +71,23 @@ PHRASES = {
     "pdf_word": "pdf",
     "quiz_word": "quiz",
     "yes_word": "yes",
-    "end_conversation": "Okay, let me know if you need anything else! 😊"
+    "end_conversation": "Okay, let me know if you need anything else! 😊",
+    "pdf_font_error": "❌ I couldn't generate the PDF because the required font file for your language could not be found. Please ensure you have a font file that supports your language (e.g., 'NotoSans-Regular.ttf') in the same directory as the bot script."
 }
 
 # Initialize a global translator instance
 translator = Translator()
 
+# Map language names to their respective font file paths
+# NOTE: The font files must be available in these exact locations.
+FONT_MAP = {
+    'Hindi': 'languages/NotoSansHindi.ttf',
+    'Telugu': 'languages/NotoSansTelugu.ttf',
+    'Kannada': 'languages/NotoSansKannada.ttf',
+    'Tamil': 'languages/NotoSansTamil.ttf',
+    'Marathi': 'languages/NotoSansHindi.ttf',
+    'Malayalam': 'languages/NotoSansMalyalam.ttf'
+}
 
 # -------------------- API Client Functions --------------------
 
@@ -215,9 +226,10 @@ def format_bullet_points(text):
             formatted_lines.append(line)
     return '\n'.join(formatted_lines)
 
-def create_pdf_notes(title, content):
+def create_pdf_notes(title, content, language):
     """
-    Generates a PDF file from the provided title and content.
+    Generates a PDF file from the provided title and content, using a
+    language-specific font for correct rendering.
     Returns the file data as a BytesIO object.
     """
     buffer = BytesIO()
@@ -225,14 +237,17 @@ def create_pdf_notes(title, content):
     styles = getSampleStyleSheet()
     story = []
 
-    # Attempt to register a Unicode-supporting font
-    font_name = "Vera.ttf"
+    # Get the correct font file path based on the user's selected language
+    font_path = FONT_MAP.get(language, 'Vera.ttf')  # Fallback to Vera.ttf if language not mapped
+    font_name = 'UnicodeFont' # A generic name for the registered font
+
     try:
-        pdfmetrics.registerFont(TTFont('Vera', font_name))
-        styles['Normal'].fontName = 'Vera'
-        styles['Heading1'].fontName = 'Vera'
+        pdfmetrics.registerFont(TTFont(font_name, font_path))
+        styles['Normal'].fontName = font_name
+        styles['Heading1'].fontName = font_name
     except Exception as e:
-        logging.warning(f"Font file '{font_name}' not found. PDF may not display non-Latin characters correctly. Error: {e}")
+        logging.error(f"Failed to find or load font file '{font_path}'. Error: {e}")
+        return None
 
     story.append(Paragraph(f"<b>{title}</b>", styles['Heading1']))
     story.append(Spacer(1, 12))
@@ -356,9 +371,12 @@ def handle_post_learn_request(chat_id, incoming_msg, user_state, state):
         
         if notes_text:
             send_message(chat_id, get_translated_phrase("English", "download_success"))
-            pdf_data = create_pdf_notes(topic, notes_text)
-            send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
-                          caption=get_translated_phrase("English", "document_caption").format(topic))
+            pdf_data = create_pdf_notes(topic, notes_text, language)
+            if pdf_data:
+                send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
+                              caption=get_translated_phrase("English", "document_caption").format(topic))
+            else:
+                send_message(chat_id, get_translated_phrase("English", "pdf_font_error"))
         else:
             send_message(chat_id, get_translated_phrase("English", "no_notes"))
         
@@ -382,9 +400,12 @@ def handle_post_quiz_request(chat_id, incoming_msg, user_state, state):
         
         if notes_text:
             send_message(chat_id, get_translated_phrase("English", "download_success"))
-            pdf_data = create_pdf_notes(topic, notes_text)
-            send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
-                          caption=get_translated_phrase("English", "document_caption").format(topic))
+            pdf_data = create_pdf_notes(topic, notes_text, language)
+            if pdf_data:
+                send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
+                              caption=get_translated_phrase("English", "document_caption").format(topic))
+            else:
+                send_message(chat_id, get_translated_phrase("English", "pdf_font_error"))
         else:
             send_message(chat_id, get_translated_phrase("English", "no_notes"))
     else:
