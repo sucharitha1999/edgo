@@ -67,7 +67,7 @@ PHRASES = {
     "quiz_error": "❌ Couldn't generate the MCQs. Try again later.",
     "fetch_error": "❌ Couldn't fetch learning content right now.",
     "unknown_error": "❌ Sorry, something went wrong. Please try again later.",
-    "unknown_command": "I'm not sure what you mean. Say '/start' to get started. 😊",
+    "unknown_command": "I'm not sure what you mean. Please choose an option from the menu:",
     "pdf_word": "pdf",
     "quiz_word": "quiz",
     "yes_word": "yes",
@@ -309,6 +309,9 @@ def handle_message(chat_id, incoming_msg, state, user_state):
 
     else:
         send_message(chat_id, get_translated_phrase("English", "unknown_command"))
+        send_message(chat_id, get_translated_phrase("English", "welcome"))
+        user_state[chat_id] = {"step": STATE_MENU}
+        return
 
 def handle_menu_selection(chat_id, incoming_msg, user_state):
     """Handles the user's choice from the main menu."""
