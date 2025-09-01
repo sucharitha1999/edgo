@@ -268,7 +268,11 @@ async def handle_message(session, chat_id, incoming_msg, state, user_state):
     """
     # Check for specific trigger phrases first, regardless of current state
     if incoming_msg.lower() == "/start" or incoming_msg.lower() == "hi edgo":
+<<<<<<< HEAD
         await send_message(session, chat_id, get_translated_phrase("English", "welcome"))
+=======
+        send_message(chat_id, get_translated_phrase("English", "welcome"))
+>>>>>>> 718d87e (changing the initial command)
         user_state[chat_id] = {"step": STATE_MENU}
         return
 
@@ -309,7 +313,11 @@ async def handle_message(session, chat_id, incoming_msg, state, user_state):
         return
 
     else:
+<<<<<<< HEAD
         await send_message(session, chat_id, get_translated_phrase("English", "unknown_command"))
+=======
+        send_message(chat_id, get_translated_phrase("English", "unknown_command"))
+>>>>>>> 718d87e (changing the initial command)
         return
 
 async def handle_menu_selection(session, chat_id, incoming_msg, user_state):
