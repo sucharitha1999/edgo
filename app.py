@@ -67,7 +67,7 @@ PHRASES = {
     "quiz_error": "❌ Couldn't generate the MCQs. Try again later.",
     "fetch_error": "❌ Couldn't fetch learning content right now.",
     "unknown_error": "❌ Sorry, something went wrong. Please try again later.",
-    "unknown_command": "I'm not sure what you mean. Please choose an option from the menu:",
+    "unknown_command": "I'm not sure what you mean. Please say 'hi edgo' to get the main menu.",
     "pdf_word": "pdf",
     "quiz_word": "quiz",
     "yes_word": "yes",
@@ -266,7 +266,8 @@ def handle_message(chat_id, incoming_msg, state, user_state):
     """
     Main handler function that routes messages based on the user's state.
     """
-    if incoming_msg.lower() == "/start":
+    # Check for specific trigger phrases first, regardless of current state
+    if incoming_msg.lower() == "/start" or incoming_msg.lower() == "hi edgo":
         send_message(chat_id, get_translated_phrase("English", "welcome"))
         user_state[chat_id] = {"step": STATE_MENU}
         return
@@ -309,8 +310,6 @@ def handle_message(chat_id, incoming_msg, state, user_state):
 
     else:
         send_message(chat_id, get_translated_phrase("English", "unknown_command"))
-        send_message(chat_id, get_translated_phrase("English", "welcome"))
-        user_state[chat_id] = {"step": STATE_MENU}
         return
 
 def handle_menu_selection(chat_id, incoming_msg, user_state):
