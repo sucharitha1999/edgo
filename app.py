@@ -67,7 +67,7 @@ PHRASES = {
     "quiz_error": "❌ Couldn't generate the MCQs. Try again later.",
     "fetch_error": "❌ Couldn't fetch learning content right now.",
     "unknown_error": "❌ Sorry, something went wrong. Please try again later.",
-    "unknown_command": "I'm not sure what you mean. Say 'hi edgo' to get started. 😊",
+    "unknown_command": "I'm not sure what you mean. Say '/start' to get started. 😊",
     "pdf_word": "pdf",
     "quiz_word": "quiz",
     "yes_word": "yes",
@@ -81,12 +81,10 @@ translator = Translator()
 # Map language names to their respective font file paths
 # NOTE: The font files must be available in these exact locations.
 FONT_MAP = {
-    'Hindi': 'languages/NotoSansHindi.ttf',
-    'Telugu': 'languages/NotoSansTelugu.ttf',
-    'Kannada': 'languages/NotoSansKannada.ttf',
-    'Tamil': 'languages/NotoSansTamil.ttf',
-    'Marathi': 'languages/NotoSansHindi.ttf',
-    'Malayalam': 'languages/NotoSansMalyalam.ttf'
+    'Hindi': 'languages/hindi/Hindi.ttf',
+    'Telugu': 'languages/telugu/NotoSans-Telugu-Regular.ttf',
+    'Kannada': 'languages/kannada/Kannada.ttf',
+    'Tamil': 'languages/tamil/Tamil.ttf',
 }
 
 # -------------------- API Client Functions --------------------
@@ -268,7 +266,7 @@ def handle_message(chat_id, incoming_msg, state, user_state):
     """
     Main handler function that routes messages based on the user's state.
     """
-    if incoming_msg.lower() == "hi edgo":
+    if incoming_msg.lower() == "/start":
         send_message(chat_id, get_translated_phrase("English", "welcome"))
         user_state[chat_id] = {"step": STATE_MENU}
         return
