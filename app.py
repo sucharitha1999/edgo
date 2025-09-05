@@ -55,6 +55,7 @@ PHRASES = {
     "mcq_prompt": "📝 What topic would you like a quiz on?",
     "language_prompt": "Great choice! Now, please tell me the language you want to learn in (e.g., English, Hindi, Spanish).",
     "invalid_option": "Please enter a valid option: 1 or 2.",
+    "getting_content_message": "🔍 Getting content for '{}'...\n⏳ This might take a moment, please wait!",
     "search_message": "Finding and explaining the topic for you... ⏳",
     "notes_intro": "📘 Here's the explanation of '{}':",
     "post_learn_prompt": "Would you like a downloadable PDF of these notes or a quiz to test your knowledge?\n\nReply with 'PDF' or 'Quiz'.",
@@ -62,6 +63,7 @@ PHRASES = {
     "download_success": "Generating your notes as a PDF... 📄",
     "document_caption": "Here are your downloadable notes for {}!",
     "no_notes": "❌ I'm sorry, I couldn't find the notes to download.",
+    "quiz_getting_content": "🧠 Generating quiz questions for '{}'...\n⏳ This might take a moment, please wait!",
     "quiz_message": "Generating an insightful quiz on '{}'... 🤔",
     "quiz_intro": "🧠 Here's your quiz:",
     "quiz_error": "❌ Couldn't generate the MCQs. Try again later.",
@@ -277,7 +279,10 @@ def handle_message(chat_id, incoming_msg, state, user_state):
         return
 
     if state.get("step") == STATE_LEARN_TOPIC:
-        user_state[chat_id]["topic"] = incoming_msg.strip()
+        topic = incoming_msg.strip()
+        user_state[chat_id]["topic"] = topic
+        # Send immediate feedback message
+        send_message(chat_id, get_translated_phrase("English", "getting_content_message").format(topic))
         send_message(chat_id, get_translated_phrase("English", "language_prompt"))
         user_state[chat_id]["step"] = STATE_LEARN_LANGUAGE_SELECTION
         return
@@ -297,7 +302,10 @@ def handle_message(chat_id, incoming_msg, state, user_state):
         return
 
     elif state.get("step") == STATE_MCQ_TOPIC:
-        user_state[chat_id]["topic"] = incoming_msg.strip()
+        topic = incoming_msg.strip()
+        user_state[chat_id]["topic"] = topic
+        # Send immediate feedback message for quiz
+        send_message(chat_id, get_translated_phrase("English", "quiz_getting_content").format(topic))
         send_message(chat_id, get_translated_phrase("English", "language_prompt"))
         user_state[chat_id]["step"] = STATE_MCQ_LANGUAGE_SELECTION
         return
@@ -341,7 +349,9 @@ def handle_learn_topic_request(chat_id, user_state, state):
         f"2. **Watch and Learn** with links to relevant YouTube videos."
     )
     
-    send_message(chat_id, get_translated_phrase("English", "search_message"))
+    # The "getting content" message was already sent when user entered the topic
+    # Now just send a brief processing message
+    send_message(chat_id, "🔄 Processing your request...")
     response = call_gemini(prompt)
     
     if response:
@@ -424,8 +434,12 @@ def handle_mcq_request(chat_id, user_state, state):
         f"Directly after each question, provide the correct answer and a brief, 1-2 line explanation of why it is correct.\n"
         f"Use Markdown to format the questions and answers clearly."
     )
-    send_message(chat_id, get_translated_phrase("English", "quiz_message").format(topic))
+    
+    # The "getting content" message was already sent when user entered the topic
+    # Now just send a brief processing message
+    send_message(chat_id, "🔄 Processing your quiz...")
     response = call_gemini(prompt)
+    
     if response:
         send_message(chat_id, get_translated_phrase("English", "quiz_intro"))
         for chunk in split_message(response):
