@@ -1,12 +1,10 @@
 # app.py
 # The main application file for the Telegram bot, with all functions consolidated.
-# Now with concurrent user handling and improved error management.
 
 # To resolve the 'reportlab' error, make sure you have a requirements.txt file
 # in your project's root directory that includes the following lines:
 # reportlab
 # googletrans
-# concurrent.futures
 
 from flask import Flask, request
 from dotenv import load_dotenv
@@ -22,9 +20,6 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from googletrans import Translator
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
-from functools import wraps
 
 # Set up logging for better debugging
 logging.basicConfig(level=logging.INFO,
@@ -34,12 +29,8 @@ app = Flask(__name__)
 
 load_dotenv()
 
-# Global state for managing conversations with thread safety
+# Global state for managing conversations
 user_state = {}
-user_state_lock = threading.Lock()
-
-# Thread pool for handling concurrent users
-executor = ThreadPoolExecutor(max_workers=20)
 
 # Load API keys from environment variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -64,7 +55,6 @@ PHRASES = {
     "mcq_prompt": "📝 What topic would you like a quiz on?",
     "language_prompt": "Great choice! Now, please tell me the language you want to learn in (e.g., English, Hindi, Spanish).",
     "invalid_option": "Please enter a valid option: 1 or 2.",
-    "getting_content_message": "🔍 Getting content for '{}'...\n⏳ This might take a moment, please wait!",
     "search_message": "Finding and explaining the topic for you... ⏳",
     "notes_intro": "📘 Here's the explanation of '{}':",
     "post_learn_prompt": "Would you like a downloadable PDF of these notes or a quiz to test your knowledge?\n\nReply with 'PDF' or 'Quiz'.",
@@ -72,19 +62,17 @@ PHRASES = {
     "download_success": "Generating your notes as a PDF... 📄",
     "document_caption": "Here are your downloadable notes for {}!",
     "no_notes": "❌ I'm sorry, I couldn't find the notes to download.",
-    "quiz_getting_content": "🧠 Generating quiz questions for '{}'...\n⏳ This might take a moment, please wait!",
     "quiz_message": "Generating an insightful quiz on '{}'... 🤔",
     "quiz_intro": "🧠 Here's your quiz:",
     "quiz_error": "❌ Couldn't generate the MCQs. Try again later.",
     "fetch_error": "❌ Couldn't fetch learning content right now.",
-    "unknown_error": "❌ Something went wrong! Please say 'hi edgo' to start again.",
+    "unknown_error": "❌ Sorry, something went wrong. Please try again later.",
     "unknown_command": "I'm not sure what you mean. Please say 'hi edgo' to get the main menu.",
     "pdf_word": "pdf",
     "quiz_word": "quiz",
     "yes_word": "yes",
     "end_conversation": "Okay, let me know if you need anything else! 😊",
-    "pdf_font_error": "❌ I couldn't generate the PDF because the required font file for your language could not be found. Please ensure you have a font file that supports your language (e.g., 'NotoSans-Regular.ttf') in the same directory as the bot script.",
-    "connection_error": "❌ Something went wrong! Please say 'hi edgo' to start again."
+    "pdf_font_error": "❌ I couldn't generate the PDF because the required font file for your language could not be found. Please ensure you have a font file that supports your language (e.g., 'NotoSans-Regular.ttf') in the same directory as the bot script."
 }
 
 # Initialize a global translator instance
@@ -99,63 +87,21 @@ FONT_MAP = {
     'Tamil': 'languages/tamil/Tamil.ttf',
 }
 
-# -------------------- Error Handling Decorators --------------------
-
-def safe_user_operation(func):
-    """Decorator to safely handle user operations and clean up on errors."""
-    @wraps(func)
-    def wrapper(chat_id, *args, **kwargs):
-        try:
-            return func(chat_id, *args, **kwargs)
-        except Exception as e:
-            logging.error(f"Error in {func.__name__} for user {chat_id}: {e}", exc_info=True)
-            # Clean up user state on error
-            cleanup_user_state(chat_id)
-            # Send error message to user
-            send_message(chat_id, get_translated_phrase("English", "connection_error"))
-            return None
-    return wrapper
-
-def cleanup_user_state(chat_id):
-    """Safely remove user state with thread safety."""
-    with user_state_lock:
-        user_state.pop(chat_id, None)
-    logging.info(f"Cleaned up state for user {chat_id}")
-
-def get_user_state(chat_id):
-    """Safely get user state with thread safety."""
-    with user_state_lock:
-        return user_state.get(chat_id, {}).copy()
-
-def set_user_state(chat_id, state):
-    """Safely set user state with thread safety."""
-    with user_state_lock:
-        user_state[chat_id] = state
-
-def update_user_state(chat_id, updates):
-    """Safely update specific fields in user state."""
-    with user_state_lock:
-        if chat_id not in user_state:
-            user_state[chat_id] = {}
-        user_state[chat_id].update(updates)
-
 # -------------------- API Client Functions --------------------
 
 def send_message(chat_id, text, parse_mode="Markdown"):
-    """Sends a message to a specific Telegram chat ID with error handling."""
+    """Sends a message to a specific Telegram chat ID."""
     url = f"{TELEGRAM_API_URL}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
     try:
-        response = requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload)
         response.raise_for_status()
         logging.info("✅ Message sent successfully to chat ID: %s", chat_id)
-        return True
     except requests.exceptions.RequestException as e:
-        logging.error("❌ Failed to send message to Telegram for user %s: %s", chat_id, e)
-        return False
+        logging.error("❌ Failed to send message to Telegram: %s", e)
 
 def send_document(chat_id, file_data, filename, caption=None):
-    """Sends a document (e.g., PDF) to a specific Telegram chat ID with error handling."""
+    """Sends a document (e.g., PDF) to a specific Telegram chat ID."""
     url = f"{TELEGRAM_API_URL}/sendDocument"
     files = {
         'document': (filename, file_data, 'application/pdf')
@@ -165,17 +111,15 @@ def send_document(chat_id, file_data, filename, caption=None):
         "caption": caption
     }
     try:
-        response = requests.post(url, data=payload, files=files, timeout=30)
+        response = requests.post(url, data=payload, files=files)
         response.raise_for_status()
         logging.info("✅ Document sent successfully to chat ID: %s", chat_id)
-        return True
     except requests.exceptions.RequestException as e:
-        logging.error("❌ Failed to send document to Telegram for user %s: %s", chat_id, e)
-        return False
+        logging.error("❌ Failed to send document to Telegram: %s", e)
 
-def call_gemini(prompt, timeout=30):
+def call_gemini(prompt):
     """
-    Calls the Gemini API with exponential backoff for retries and timeout.
+    Calls the Gemini API with exponential backoff for retries.
     Returns the generated text or None on failure.
     """
     try:
@@ -187,14 +131,9 @@ def call_gemini(prompt, timeout=30):
         retries = 0
         max_retries = 3
         while retries < max_retries:
-            response = requests.post(
-                f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", 
-                headers=headers, 
-                data=json.dumps(payload),
-                timeout=timeout
-            )
+            response = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, data=json.dumps(payload))
             if response.status_code == 429:  # Too Many Requests
-                delay = min(2**retries, 10)  # Cap delay at 10 seconds
+                delay = 2**retries
                 logging.warning("Rate limit exceeded. Retrying in %d seconds...", delay)
                 time.sleep(delay)
                 retries += 1
@@ -203,7 +142,7 @@ def call_gemini(prompt, timeout=30):
                 break
 
         if retries == max_retries:
-            logging.error("❌ Max retries reached for Gemini API. Giving up.")
+            logging.error("❌ Max retries reached. Giving up.")
             return None
 
         result = response.json()
@@ -223,7 +162,7 @@ def call_gemini(prompt, timeout=30):
 
 def get_translated_phrase(language, key):
     """
-    Translates a key's phrase to the specified language with error handling.
+    Translates a key's phrase to the specified language.
     If translation fails or is for English, returns the original phrase.
     """
     phrase = PHRASES.get(key, "")
@@ -231,7 +170,7 @@ def get_translated_phrase(language, key):
         return phrase
     
     try:
-        translated = translator.translate(phrase, dest=language, timeout=10).text
+        translated = translator.translate(phrase, dest=language).text
         return translated
     except Exception as e:
         logging.error(f"Translation failed for '{phrase}' to '{language}': {e}")
@@ -242,7 +181,7 @@ def set_webhook():
     webhook_url = os.getenv("WEBHOOK_URL")
     url = f"{TELEGRAM_API_URL}/setWebhook?url={webhook_url}"
     try:
-        res = requests.get(url, timeout=10)
+        res = requests.get(url)
         res.raise_for_status()
         logging.info("🔗 Webhook set successfully: %s", res.json())
     except requests.exceptions.RequestException as e:
@@ -261,6 +200,8 @@ def split_message(text, chunk_size=1400):
             last_space = text.rfind(' ', start, end)
             if last_space != -1:
                 end = last_space
+            else:
+                pass
         
         chunk = text[start:end].strip()
         if chunk:
@@ -289,119 +230,104 @@ def create_pdf_notes(title, content, language):
     language-specific font for correct rendering.
     Returns the file data as a BytesIO object.
     """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    story = []
+
+    # Get the correct font file path based on the user's selected language
+    font_path = FONT_MAP.get(language, 'Vera.ttf')  # Fallback to Vera.ttf if language not mapped
+    font_name = 'UnicodeFont' # A generic name for the registered font
+
     try:
-        buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=letter)
-        styles = getSampleStyleSheet()
-        story = []
-
-        # Get the correct font file path based on the user's selected language
-        font_path = FONT_MAP.get(language, 'Vera.ttf')  # Fallback to Vera.ttf if language not mapped
-        font_name = 'UnicodeFont' # A generic name for the registered font
-
-        try:
-            pdfmetrics.registerFont(TTFont(font_name, font_path))
-            styles['Normal'].fontName = font_name
-            styles['Heading1'].fontName = font_name
-        except Exception as e:
-            logging.error(f"Failed to find or load font file '{font_path}'. Error: {e}")
-            return None
-
-        story.append(Paragraph(f"<b>{title}</b>", styles['Heading1']))
-        story.append(Spacer(1, 12))
-        
-        pdf_content = content.replace('* ', '\n\u2022 ').replace('**', '')
-        for line in pdf_content.split('\n'):
-            if line.strip():
-                story.append(Paragraph(line, styles['Normal']))
-                story.append(Spacer(1, 6))
-
-        doc.build(story)
-        buffer.seek(0)
-        return buffer
+        pdfmetrics.registerFont(TTFont(font_name, font_path))
+        styles['Normal'].fontName = font_name
+        styles['Heading1'].fontName = font_name
     except Exception as e:
-        logging.error(f"Error creating PDF: {e}")
+        logging.error(f"Failed to find or load font file '{font_path}'. Error: {e}")
         return None
+
+    story.append(Paragraph(f"<b>{title}</b>", styles['Heading1']))
+    story.append(Spacer(1, 12))
+    
+    pdf_content = content.replace('* ', '\n\u2022 ').replace('**', '')
+    for line in pdf_content.split('\n'):
+        story.append(Paragraph(line, styles['Normal']))
+        story.append(Spacer(1, 6))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
 
 
 # -------------------- Handler Functions --------------------
 
-@safe_user_operation
-def handle_message(chat_id, incoming_msg, state, user_state_dict):
+def handle_message(chat_id, incoming_msg, state, user_state):
     """
     Main handler function that routes messages based on the user's state.
     """
     # Check for specific trigger phrases first, regardless of current state
     if incoming_msg.lower() == "/start" or incoming_msg.lower() == "hi edgo":
         send_message(chat_id, get_translated_phrase("English", "welcome"))
-        set_user_state(chat_id, {"step": STATE_MENU})
+        user_state[chat_id] = {"step": STATE_MENU}
         return
 
     if state.get("step") == STATE_MENU:
-        handle_menu_selection(chat_id, incoming_msg)
+        handle_menu_selection(chat_id, incoming_msg, user_state)
         return
 
     if state.get("step") == STATE_LEARN_TOPIC:
-        topic = incoming_msg.strip()
-        update_user_state(chat_id, {"topic": topic})
-        # Send immediate feedback message
-        send_message(chat_id, get_translated_phrase("English", "getting_content_message").format(topic))
+        user_state[chat_id]["topic"] = incoming_msg.strip()
         send_message(chat_id, get_translated_phrase("English", "language_prompt"))
-        update_user_state(chat_id, {"step": STATE_LEARN_LANGUAGE_SELECTION})
+        user_state[chat_id]["step"] = STATE_LEARN_LANGUAGE_SELECTION
         return
         
     elif state.get("step") == STATE_LEARN_LANGUAGE_SELECTION:
         language = incoming_msg.strip().capitalize()
-        update_user_state(chat_id, {"language": language})
-        handle_learn_topic_request(chat_id)
+        user_state[chat_id]["language"] = language
+        handle_learn_topic_request(chat_id, user_state, state)
         return
     
     elif state.get("step") == STATE_POST_LEARN:
-        handle_post_learn_request(chat_id, incoming_msg)
+        handle_post_learn_request(chat_id, incoming_msg, user_state, state)
         return
 
     elif state.get("step") == STATE_POST_QUIZ:
-        handle_post_quiz_request(chat_id, incoming_msg)
+        handle_post_quiz_request(chat_id, incoming_msg, user_state, state)
         return
 
     elif state.get("step") == STATE_MCQ_TOPIC:
-        topic = incoming_msg.strip()
-        update_user_state(chat_id, {"topic": topic})
-        # Send immediate feedback message for quiz
-        send_message(chat_id, get_translated_phrase("English", "quiz_getting_content").format(topic))
+        user_state[chat_id]["topic"] = incoming_msg.strip()
         send_message(chat_id, get_translated_phrase("English", "language_prompt"))
-        update_user_state(chat_id, {"step": STATE_MCQ_LANGUAGE_SELECTION})
+        user_state[chat_id]["step"] = STATE_MCQ_LANGUAGE_SELECTION
         return
 
     elif state.get("step") == STATE_MCQ_LANGUAGE_SELECTION:
         language = incoming_msg.strip().capitalize()
-        update_user_state(chat_id, {"language": language})
-        handle_mcq_request(chat_id)
+        user_state[chat_id]["language"] = language
+        handle_mcq_request(chat_id, user_state, state)
         return
 
     else:
         send_message(chat_id, get_translated_phrase("English", "unknown_command"))
         return
 
-@safe_user_operation
-def handle_menu_selection(chat_id, incoming_msg):
+def handle_menu_selection(chat_id, incoming_msg, user_state):
     """Handles the user's choice from the main menu."""
     if incoming_msg == "1":
-        update_user_state(chat_id, {"step": STATE_LEARN_TOPIC})
+        user_state[chat_id]["step"] = STATE_LEARN_TOPIC
         send_message(chat_id, get_translated_phrase("English", "learn_prompt"))
     elif incoming_msg == "2":
-        update_user_state(chat_id, {"step": STATE_MCQ_TOPIC})
+        user_state[chat_id]["step"] = STATE_MCQ_TOPIC
         send_message(chat_id, get_translated_phrase("English", "mcq_prompt"))
     else:
         send_message(chat_id, get_translated_phrase("English", "invalid_option"))
 
-@safe_user_operation
-def handle_learn_topic_request(chat_id):
+def handle_learn_topic_request(chat_id, user_state, state):
     """
     Generates a detailed explanation with external resources
     and prompts the user for a downloadable file.
     """
-    state = get_user_state(chat_id)
     topic = state.get("topic")
     language = state.get("language", "English")
     
@@ -415,32 +341,24 @@ def handle_learn_topic_request(chat_id):
         f"2. **Watch and Learn** with links to relevant YouTube videos."
     )
     
-    # Send processing message
-    send_message(chat_id, "🔄 Processing your request...")
+    send_message(chat_id, get_translated_phrase("English", "search_message"))
     response = call_gemini(prompt)
     
     if response:
-        update_user_state(chat_id, {"full_notes": response})
+        state["full_notes"] = response
         formatted_response = format_bullet_points(response)
         send_message(chat_id, get_translated_phrase("English", "notes_intro").format(topic))
-        
-        # Send message chunks
         for chunk in split_message(formatted_response):
-            if not send_message(chat_id, chunk):
-                # If message sending fails, cleanup and return
-                cleanup_user_state(chat_id)
-                return
+            send_message(chat_id, chunk)
 
         send_message(chat_id, get_translated_phrase("English", "post_learn_prompt"))
-        update_user_state(chat_id, {"step": STATE_POST_LEARN})
+        user_state[chat_id]["step"] = STATE_POST_LEARN
     else:
         send_message(chat_id, get_translated_phrase("English", "fetch_error"))
-        cleanup_user_state(chat_id)
+        user_state.pop(chat_id, None)
 
-@safe_user_operation
-def handle_post_learn_request(chat_id, incoming_msg):
+def handle_post_learn_request(chat_id, incoming_msg, user_state, state):
     """Handles the user's request for either a PDF or an MCQ quiz."""
-    state = get_user_state(chat_id)
     language = state.get("language", "English")
     
     # Check for translated versions of "PDF" and "Quiz"
@@ -462,19 +380,17 @@ def handle_post_learn_request(chat_id, incoming_msg):
         else:
             send_message(chat_id, get_translated_phrase("English", "no_notes"))
         
-        cleanup_user_state(chat_id)
+        user_state.pop(chat_id, None)
 
     elif incoming_msg.lower() == quiz_word:
-        handle_mcq_request(chat_id)
+        handle_mcq_request(chat_id, user_state, state)
 
     else:
         send_message(chat_id, "Please reply with 'PDF' or 'Quiz'.")
-        cleanup_user_state(chat_id)
+        user_state.pop(chat_id, None)
 
-@safe_user_operation
-def handle_post_quiz_request(chat_id, incoming_msg):
+def handle_post_quiz_request(chat_id, incoming_msg, user_state, state):
     """Handles the user's request for a PDF after completing the quiz."""
-    state = get_user_state(chat_id)
     language = state.get("language", "English")
     yes_word = get_translated_phrase(language, "yes_word").lower()
 
@@ -495,12 +411,10 @@ def handle_post_quiz_request(chat_id, incoming_msg):
     else:
         send_message(chat_id, get_translated_phrase("English", "end_conversation"))
     
-    cleanup_user_state(chat_id)
+    user_state.pop(chat_id, None)
 
-@safe_user_operation
-def handle_mcq_request(chat_id):
+def handle_mcq_request(chat_id, user_state, state):
     """Generates insightful MCQs and sends the solution, then prompts for PDF."""
-    state = get_user_state(chat_id)
     topic = state.get("topic")
     language = state.get("language", "English")
 
@@ -510,39 +424,18 @@ def handle_mcq_request(chat_id):
         f"Directly after each question, provide the correct answer and a brief, 1-2 line explanation of why it is correct.\n"
         f"Use Markdown to format the questions and answers clearly."
     )
-    
-    # Send processing message
-    send_message(chat_id, "🔄 Processing your quiz...")
+    send_message(chat_id, get_translated_phrase("English", "quiz_message").format(topic))
     response = call_gemini(prompt)
-    
     if response:
         send_message(chat_id, get_translated_phrase("English", "quiz_intro"))
-        
-        # Send message chunks
         for chunk in split_message(response):
-            if not send_message(chat_id, chunk):
-                # If message sending fails, cleanup and return
-                cleanup_user_state(chat_id)
-                return
+            send_message(chat_id, chunk)
         
         send_message(chat_id, get_translated_phrase("English", "post_quiz_prompt"))
-        update_user_state(chat_id, {"step": STATE_POST_QUIZ})
+        user_state[chat_id]["step"] = STATE_POST_QUIZ
     else:
         send_message(chat_id, get_translated_phrase("English", "quiz_error"))
-        cleanup_user_state(chat_id)
-
-
-# -------------------- Concurrent Processing --------------------
-
-def process_user_message(chat_id, incoming_msg):
-    """Process a single user's message in a separate thread."""
-    try:
-        state = get_user_state(chat_id)
-        handle_message(chat_id, incoming_msg, state, user_state)
-    except Exception as e:
-        logging.error(f"Error processing message for user {chat_id}: {e}", exc_info=True)
-        cleanup_user_state(chat_id)
-        send_message(chat_id, get_translated_phrase("English", "unknown_error"))
+        user_state.pop(chat_id, None)
 
 
 # -------------------- Routes --------------------
@@ -550,14 +443,14 @@ def process_user_message(chat_id, incoming_msg):
 @app.route("/")
 def home():
     """A simple home route to check if the bot is running."""
-    return "🚀 Edgo Telegram bot is running! Handling up to 20 concurrent users."
+    return "🚀 Edgo Telegram bot is running!"
 
 @app.route("/webhook", methods=["POST"])
 def telegram_webhook():
-    """Handles all incoming messages from Telegram with concurrent processing."""
+    """Handles all incoming messages from Telegram."""
     try:
         data = request.get_json()
-        logging.info("📩 Incoming message received")
+        logging.info("📩 Incoming message: %s", json.dumps(data, indent=2))
 
         if not data or "message" not in data or "text" not in data["message"]:
             logging.warning("Received invalid message data.")
@@ -565,61 +458,24 @@ def telegram_webhook():
 
         chat_id = data["message"]["chat"]["id"]
         incoming_msg = data["message"]["text"].strip()
+        state = user_state.get(chat_id, {})
 
-        # Submit the message processing to the thread pool for concurrent handling
-        future = executor.submit(process_user_message, chat_id, incoming_msg)
-        
-        # Don't wait for completion - return immediately to handle more requests
-        logging.info(f"Message from user {chat_id} submitted to thread pool")
+        handle_message(chat_id, incoming_msg, state, user_state)
 
     except Exception as e:
         logging.error("An error occurred during webhook processing: %s", e, exc_info=True)
-        # Try to send error message if we have chat_id
-        try:
-            if 'chat_id' in locals():
-                cleanup_user_state(chat_id)
-                send_message(chat_id, get_translated_phrase("English", "unknown_error"))
-        except:
-            pass  # Silently fail if we can't even send error message
+        send_message(chat_id, get_translated_phrase("English", "unknown_error"))
 
     return "ok"
-
-@app.route("/health")
-def health_check():
-    """Health check endpoint to monitor bot status."""
-    try:
-        # Check if we can make a basic API call
-        url = f"{TELEGRAM_API_URL}/getMe"
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()
-        
-        active_users = len(user_state)
-        return {
-            "status": "healthy",
-            "active_users": active_users,
-            "max_workers": 20
-        }
-    except Exception as e:
-        return {
-            "status": "unhealthy",
-            "error": str(e)
-        }, 500
 
 
 # -------------------- Startup --------------------
 
 if __name__ == "__main__":
-    try:
-        if os.getenv("WEBHOOK_URL"):
-            set_webhook()
-        else:
-            logging.error("WEBHOOK_URL environment variable is not set. Webhook will not be configured.")
+    if os.getenv("WEBHOOK_URL"):
+        set_webhook()
+    else:
+        logging.error("WEBHOOK_URL environment variable is not set. Webhook will not be configured.")
 
-        port = int(os.environ.get("PORT", 5000))
-        logging.info(f"🚀 Starting Edgo bot with concurrent handling for 20 users on port {port}")
-        app.run(host="0.0.0.0", port=port, threaded=True)
-    except Exception as e:
-        logging.error(f"Failed to start the application: {e}", exc_info=True)
-    finally:
-        # Cleanup thread pool on shutdown
-        executor.shutdown(wait=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
