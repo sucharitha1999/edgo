@@ -122,11 +122,8 @@ async def call_gemini(session, prompt):
         }
         headers = {"Content-Type": "application/json"}
         
-        # Add a brief initial delay
-        await asyncio.sleep(1)
-
         retries = 0
-        max_retries = 5  # Increased max retries for better resilience
+        max_retries = 3
         while retries < max_retries:
             async with session.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, json=payload) as response:
                 if response.status == 429:  # Too Many Requests
@@ -134,10 +131,8 @@ async def call_gemini(session, prompt):
                     logging.warning("Rate limit exceeded. Retrying in %d seconds...", delay)
                     await asyncio.sleep(delay)
                     retries += 1
-                elif response.status != 200:
-                    logging.error("❌ Gemini API returned an HTTP error: %s", response.status)
-                    response.raise_for_status()
                 else:
+                    response.raise_for_status()
                     break
 
         if retries == max_retries:
