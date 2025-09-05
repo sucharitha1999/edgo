@@ -67,7 +67,8 @@ PHRASES = {
     "quiz_word": "quiz",
     "yes_word": "yes",
     "end_conversation": "Okay, let me know if you need anything else! 😊",
-    "pdf_font_error": "❌ I couldn't generate the PDF because the required font file for your language could not be found. Please ensure you have a font file that supports your language (e.g., 'NotoSans-Regular.ttf') in the same directory as the bot script."
+    "pdf_font_error": "❌ I couldn't generate the PDF because the required font file for your language could not be found. Please ensure you have a font file that supports your language (e.g., 'NotoSans-Regular.ttf') in the same directory as the bot script.",
+    "retry_message": "Hmm, having a little trouble connecting. Let me try that again for you...",
 }
 
 # Initialize a global translator instance
@@ -111,7 +112,7 @@ async def send_document(session, chat_id, file_data, filename, caption=None):
     except Exception as e:
         logging.error("❌ Failed to send document to Telegram: %s", e)
 
-async def call_gemini(session, prompt):
+async def call_gemini(session, chat_id, prompt):
     """
     Calls the Gemini API with exponential backoff for retries.
     Returns the generated text or None on failure.
@@ -123,17 +124,23 @@ async def call_gemini(session, prompt):
         headers = {"Content-Type": "application/json"}
         
         retries = 0
-        max_retries = 3
+        max_retries = 10  # Increased max retries for better resilience
         while retries < max_retries:
+            if retries > 0:
+                await send_message(session, chat_id, get_translated_phrase("English", "retry_message"))
+                delay = 2**retries
+                logging.warning("Rate limit or connection error. Retrying in %d seconds...", delay)
+                await asyncio.sleep(delay)
+
             async with session.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, json=payload) as response:
                 if response.status == 429:  # Too Many Requests
-                    delay = 2**retries
-                    logging.warning("Rate limit exceeded. Retrying in %d seconds...", delay)
-                    await asyncio.sleep(delay)
-                    retries += 1
-                else:
+                    pass # Handled by the retry logic above
+                elif response.status != 200:
+                    logging.error("❌ Gemini API returned an HTTP error: %s", response.status)
                     response.raise_for_status()
+                else:
                     break
+            retries += 1
 
         if retries == max_retries:
             logging.error("❌ Max retries reached. Giving up.")
@@ -335,7 +342,7 @@ async def handle_learn_topic_request(session, chat_id, user_state, state):
     )
     
     await send_message(session, chat_id, get_translated_phrase("English", "search_message"))
-    response = await call_gemini(session, prompt)
+    response = await call_gemini(session, chat_id, prompt)
     
     if response:
         state["full_notes"] = response
@@ -418,7 +425,7 @@ async def handle_mcq_request(session, chat_id, user_state, state):
         f"Use Markdown to format the questions and answers clearly."
     )
     await send_message(session, chat_id, get_translated_phrase("English", "quiz_message").format(topic))
-    response = await call_gemini(session, prompt)
+    response = await call_gemini(session, chat_id, prompt)
     if response:
         await send_message(session, chat_id, get_translated_phrase("English", "quiz_intro"))
         for chunk in split_message(response):
