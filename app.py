@@ -267,57 +267,50 @@ def create_pdf_notes(title, content, language):
 def handle_message(chat_id, incoming_msg, state, user_state):
     """
     Main handler function that routes messages based on the user's state.
-    This version includes more robust state management and a universal reset.
     """
-    # Universal check for starting a new conversation
-    if incoming_msg.lower() in ["hi edgo", "/start"]:
+    if incoming_msg.lower() == "hi edgo":
         send_message(chat_id, get_translated_phrase("English", "welcome"))
         user_state[chat_id] = {"step": STATE_MENU}
         return
 
-    # Process messages based on the current state
-    current_step = state.get("step")
-
-    if current_step == STATE_MENU:
+    if state.get("step") == STATE_MENU:
         handle_menu_selection(chat_id, incoming_msg, user_state)
         return
 
-    elif current_step == STATE_LEARN_TOPIC:
+    if state.get("step") == STATE_LEARN_TOPIC:
         user_state[chat_id]["topic"] = incoming_msg.strip()
         send_message(chat_id, get_translated_phrase("English", "language_prompt"))
         user_state[chat_id]["step"] = STATE_LEARN_LANGUAGE_SELECTION
         return
         
-    elif current_step == STATE_LEARN_LANGUAGE_SELECTION:
+    elif state.get("step") == STATE_LEARN_LANGUAGE_SELECTION:
         language = incoming_msg.strip().capitalize()
         user_state[chat_id]["language"] = language
         handle_learn_topic_request(chat_id, user_state, state)
         return
     
-    elif current_step == STATE_POST_LEARN:
+    elif state.get("step") == STATE_POST_LEARN:
         handle_post_learn_request(chat_id, incoming_msg, user_state, state)
         return
 
-    elif current_step == STATE_POST_QUIZ:
+    elif state.get("step") == STATE_POST_QUIZ:
         handle_post_quiz_request(chat_id, incoming_msg, user_state, state)
         return
 
-    elif current_step == STATE_MCQ_TOPIC:
+    elif state.get("step") == STATE_MCQ_TOPIC:
         user_state[chat_id]["topic"] = incoming_msg.strip()
         send_message(chat_id, get_translated_phrase("English", "language_prompt"))
         user_state[chat_id]["step"] = STATE_MCQ_LANGUAGE_SELECTION
         return
 
-    elif current_step == STATE_MCQ_LANGUAGE_SELECTION:
+    elif state.get("step") == STATE_MCQ_LANGUAGE_SELECTION:
         language = incoming_msg.strip().capitalize()
         user_state[chat_id]["language"] = language
         handle_mcq_request(chat_id, user_state, state)
         return
 
-    # If the message does not match any expected state, prompt the user to restart
     else:
         send_message(chat_id, get_translated_phrase("English", "unknown_command"))
-
 
 def handle_menu_selection(chat_id, incoming_msg, user_state):
     """Handles the user's choice from the main menu."""
