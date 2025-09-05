@@ -16,6 +16,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from googletrans import Translator
+import requests # This line was missing
 
 # Set up logging for better debugging
 logging.basicConfig(level=logging.INFO,
