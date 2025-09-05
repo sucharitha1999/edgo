@@ -1,17 +1,13 @@
 # app.py
-# The main application file for the Telegram bot, with all functions consolidated.
+# The main application file for the Telegram bot, rewritten for asynchronous
+# processing with aiohttp to handle high traffic and multiple concurrent requests.
 
-# To resolve the 'reportlab' error, make sure you have a requirements.txt file
-# in your project's root directory that includes the following lines:
-# reportlab
-# googletrans
-
-from flask import Flask, request
+from aiohttp import web, ClientSession
 from dotenv import load_dotenv
 import os
 import json
 import logging
-import requests
+import asyncio
 import time
 from io import BytesIO
 from reportlab.lib.pagesizes import letter
@@ -24,8 +20,6 @@ from googletrans import Translator
 # Set up logging for better debugging
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
-
-app = Flask(__name__)
 
 load_dotenv()
 
@@ -89,35 +83,34 @@ FONT_MAP = {
 
 # -------------------- API Client Functions --------------------
 
-def send_message(chat_id, text, parse_mode="Markdown"):
-    """Sends a message to a specific Telegram chat ID."""
+async def send_message(session, chat_id, text, parse_mode="Markdown"):
+    """Sends a message to a specific Telegram chat ID asynchronously."""
     url = f"{TELEGRAM_API_URL}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
     try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
+        async with session.post(url, json=payload) as response:
+            response.raise_for_status()
         logging.info("✅ Message sent successfully to chat ID: %s", chat_id)
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         logging.error("❌ Failed to send message to Telegram: %s", e)
 
-def send_document(chat_id, file_data, filename, caption=None):
-    """Sends a document (e.g., PDF) to a specific Telegram chat ID."""
+async def send_document(session, chat_id, file_data, filename, caption=None):
+    """Sends a document (e.g., PDF) to a specific Telegram chat ID asynchronously."""
     url = f"{TELEGRAM_API_URL}/sendDocument"
-    files = {
-        'document': (filename, file_data, 'application/pdf')
-    }
-    payload = {
-        "chat_id": chat_id,
-        "caption": caption
-    }
+    data = web.FormData()
+    data.add_field('chat_id', str(chat_id))
+    data.add_field('document', file_data, filename=filename, content_type='application/pdf')
+    if caption:
+        data.add_field('caption', caption)
+        
     try:
-        response = requests.post(url, data=payload, files=files)
-        response.raise_for_status()
+        async with session.post(url, data=data) as response:
+            response.raise_for_status()
         logging.info("✅ Document sent successfully to chat ID: %s", chat_id)
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         logging.error("❌ Failed to send document to Telegram: %s", e)
 
-def call_gemini(prompt):
+async def call_gemini(session, prompt):
     """
     Calls the Gemini API with exponential backoff for retries.
     Returns the generated text or None on failure.
@@ -131,21 +124,21 @@ def call_gemini(prompt):
         retries = 0
         max_retries = 3
         while retries < max_retries:
-            response = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, data=json.dumps(payload))
-            if response.status_code == 429:  # Too Many Requests
-                delay = 2**retries
-                logging.warning("Rate limit exceeded. Retrying in %d seconds...", delay)
-                time.sleep(delay)
-                retries += 1
-            else:
-                response.raise_for_status()
-                break
+            async with session.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, json=payload) as response:
+                if response.status == 429:  # Too Many Requests
+                    delay = 2**retries
+                    logging.warning("Rate limit exceeded. Retrying in %d seconds...", delay)
+                    await asyncio.sleep(delay)
+                    retries += 1
+                else:
+                    response.raise_for_status()
+                    break
 
         if retries == max_retries:
             logging.error("❌ Max retries reached. Giving up.")
             return None
 
-        result = response.json()
+        result = await response.json()
         if "candidates" in result and len(result["candidates"]) > 0 and \
            "content" in result["candidates"][0] and "parts" in result["candidates"][0]["content"] and \
            len(result["candidates"][0]["content"]["parts"]) > 0:
@@ -156,7 +149,6 @@ def call_gemini(prompt):
     except Exception as e:
         logging.error("❌ Gemini API error: %s", e, exc_info=True)
         return None
-
 
 # -------------------- Utility Functions --------------------
 
@@ -262,68 +254,68 @@ def create_pdf_notes(title, content, language):
 
 # -------------------- Handler Functions --------------------
 
-def handle_message(chat_id, incoming_msg, state, user_state):
+async def handle_message(session, chat_id, incoming_msg, state, user_state):
     """
     Main handler function that routes messages based on the user's state.
     """
     # Check for specific trigger phrases first, regardless of current state
     if incoming_msg.lower() == "/start" or incoming_msg.lower() == "hi edgo":
-        send_message(chat_id, get_translated_phrase("English", "welcome"))
+        await send_message(session, chat_id, get_translated_phrase("English", "welcome"))
         user_state[chat_id] = {"step": STATE_MENU}
         return
 
     if state.get("step") == STATE_MENU:
-        handle_menu_selection(chat_id, incoming_msg, user_state)
+        await handle_menu_selection(session, chat_id, incoming_msg, user_state)
         return
 
     if state.get("step") == STATE_LEARN_TOPIC:
         user_state[chat_id]["topic"] = incoming_msg.strip()
-        send_message(chat_id, get_translated_phrase("English", "language_prompt"))
+        await send_message(session, chat_id, get_translated_phrase("English", "language_prompt"))
         user_state[chat_id]["step"] = STATE_LEARN_LANGUAGE_SELECTION
         return
         
     elif state.get("step") == STATE_LEARN_LANGUAGE_SELECTION:
         language = incoming_msg.strip().capitalize()
         user_state[chat_id]["language"] = language
-        handle_learn_topic_request(chat_id, user_state, state)
+        await handle_learn_topic_request(session, chat_id, user_state, state)
         return
     
     elif state.get("step") == STATE_POST_LEARN:
-        handle_post_learn_request(chat_id, incoming_msg, user_state, state)
+        await handle_post_learn_request(session, chat_id, incoming_msg, user_state, state)
         return
 
     elif state.get("step") == STATE_POST_QUIZ:
-        handle_post_quiz_request(chat_id, incoming_msg, user_state, state)
+        await handle_post_quiz_request(session, chat_id, incoming_msg, user_state, state)
         return
 
     elif state.get("step") == STATE_MCQ_TOPIC:
         user_state[chat_id]["topic"] = incoming_msg.strip()
-        send_message(chat_id, get_translated_phrase("English", "language_prompt"))
+        await send_message(session, chat_id, get_translated_phrase("English", "language_prompt"))
         user_state[chat_id]["step"] = STATE_MCQ_LANGUAGE_SELECTION
         return
 
     elif state.get("step") == STATE_MCQ_LANGUAGE_SELECTION:
         language = incoming_msg.strip().capitalize()
         user_state[chat_id]["language"] = language
-        handle_mcq_request(chat_id, user_state, state)
+        await handle_mcq_request(session, chat_id, user_state, state)
         return
 
     else:
-        send_message(chat_id, get_translated_phrase("English", "unknown_command"))
+        await send_message(session, chat_id, get_translated_phrase("English", "unknown_command"))
         return
 
-def handle_menu_selection(chat_id, incoming_msg, user_state):
+async def handle_menu_selection(session, chat_id, incoming_msg, user_state):
     """Handles the user's choice from the main menu."""
     if incoming_msg == "1":
         user_state[chat_id]["step"] = STATE_LEARN_TOPIC
-        send_message(chat_id, get_translated_phrase("English", "learn_prompt"))
+        await send_message(session, chat_id, get_translated_phrase("English", "learn_prompt"))
     elif incoming_msg == "2":
         user_state[chat_id]["step"] = STATE_MCQ_TOPIC
-        send_message(chat_id, get_translated_phrase("English", "mcq_prompt"))
+        await send_message(session, chat_id, get_translated_phrase("English", "mcq_prompt"))
     else:
-        send_message(chat_id, get_translated_phrase("English", "invalid_option"))
+        await send_message(session, chat_id, get_translated_phrase("English", "invalid_option"))
 
-def handle_learn_topic_request(chat_id, user_state, state):
+async def handle_learn_topic_request(session, chat_id, user_state, state):
     """
     Generates a detailed explanation with external resources
     and prompts the user for a downloadable file.
@@ -341,23 +333,23 @@ def handle_learn_topic_request(chat_id, user_state, state):
         f"2. **Watch and Learn** with links to relevant YouTube videos."
     )
     
-    send_message(chat_id, get_translated_phrase("English", "search_message"))
-    response = call_gemini(prompt)
+    await send_message(session, chat_id, get_translated_phrase("English", "search_message"))
+    response = await call_gemini(session, prompt)
     
     if response:
         state["full_notes"] = response
         formatted_response = format_bullet_points(response)
-        send_message(chat_id, get_translated_phrase("English", "notes_intro").format(topic))
+        await send_message(session, chat_id, get_translated_phrase("English", "notes_intro").format(topic))
         for chunk in split_message(formatted_response):
-            send_message(chat_id, chunk)
+            await send_message(session, chat_id, chunk)
 
-        send_message(chat_id, get_translated_phrase("English", "post_learn_prompt"))
+        await send_message(session, chat_id, get_translated_phrase("English", "post_learn_prompt"))
         user_state[chat_id]["step"] = STATE_POST_LEARN
     else:
-        send_message(chat_id, get_translated_phrase("English", "fetch_error"))
+        await send_message(session, chat_id, get_translated_phrase("English", "fetch_error"))
         user_state.pop(chat_id, None)
 
-def handle_post_learn_request(chat_id, incoming_msg, user_state, state):
+async def handle_post_learn_request(session, chat_id, incoming_msg, user_state, state):
     """Handles the user's request for either a PDF or an MCQ quiz."""
     language = state.get("language", "English")
     
@@ -370,26 +362,26 @@ def handle_post_learn_request(chat_id, incoming_msg, user_state, state):
         topic = state.get("topic", "notes")
         
         if notes_text:
-            send_message(chat_id, get_translated_phrase("English", "download_success"))
+            await send_message(session, chat_id, get_translated_phrase("English", "download_success"))
             pdf_data = create_pdf_notes(topic, notes_text, language)
             if pdf_data:
-                send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
-                              caption=get_translated_phrase("English", "document_caption").format(topic))
+                await send_document(session, chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
+                                    caption=get_translated_phrase("English", "document_caption").format(topic))
             else:
-                send_message(chat_id, get_translated_phrase("English", "pdf_font_error"))
+                await send_message(session, chat_id, get_translated_phrase("English", "pdf_font_error"))
         else:
-            send_message(chat_id, get_translated_phrase("English", "no_notes"))
+            await send_message(session, chat_id, get_translated_phrase("English", "no_notes"))
         
         user_state.pop(chat_id, None)
 
     elif incoming_msg.lower() == quiz_word:
-        handle_mcq_request(chat_id, user_state, state)
+        await handle_mcq_request(session, chat_id, user_state, state)
 
     else:
-        send_message(chat_id, "Please reply with 'PDF' or 'Quiz'.")
+        await send_message(session, chat_id, "Please reply with 'PDF' or 'Quiz'.")
         user_state.pop(chat_id, None)
 
-def handle_post_quiz_request(chat_id, incoming_msg, user_state, state):
+async def handle_post_quiz_request(session, chat_id, incoming_msg, user_state, state):
     """Handles the user's request for a PDF after completing the quiz."""
     language = state.get("language", "English")
     yes_word = get_translated_phrase(language, "yes_word").lower()
@@ -399,21 +391,21 @@ def handle_post_quiz_request(chat_id, incoming_msg, user_state, state):
         topic = state.get("topic", "notes")
         
         if notes_text:
-            send_message(chat_id, get_translated_phrase("English", "download_success"))
+            await send_message(session, chat_id, get_translated_phrase("English", "download_success"))
             pdf_data = create_pdf_notes(topic, notes_text, language)
             if pdf_data:
-                send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
-                              caption=get_translated_phrase("English", "document_caption").format(topic))
+                await send_document(session, chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
+                                    caption=get_translated_phrase("English", "document_caption").format(topic))
             else:
-                send_message(chat_id, get_translated_phrase("English", "pdf_font_error"))
+                await send_message(session, chat_id, get_translated_phrase("English", "pdf_font_error"))
         else:
-            send_message(chat_id, get_translated_phrase("English", "no_notes"))
+            await send_message(session, chat_id, get_translated_phrase("English", "no_notes"))
     else:
-        send_message(chat_id, get_translated_phrase("English", "end_conversation"))
+        await send_message(session, chat_id, get_translated_phrase("English", "end_conversation"))
     
     user_state.pop(chat_id, None)
 
-def handle_mcq_request(chat_id, user_state, state):
+async def handle_mcq_request(session, chat_id, user_state, state):
     """Generates insightful MCQs and sends the solution, then prompts for PDF."""
     topic = state.get("topic")
     language = state.get("language", "English")
@@ -424,49 +416,50 @@ def handle_mcq_request(chat_id, user_state, state):
         f"Directly after each question, provide the correct answer and a brief, 1-2 line explanation of why it is correct.\n"
         f"Use Markdown to format the questions and answers clearly."
     )
-    send_message(chat_id, get_translated_phrase("English", "quiz_message").format(topic))
-    response = call_gemini(prompt)
+    await send_message(session, chat_id, get_translated_phrase("English", "quiz_message").format(topic))
+    response = await call_gemini(session, prompt)
     if response:
-        send_message(chat_id, get_translated_phrase("English", "quiz_intro"))
+        await send_message(session, chat_id, get_translated_phrase("English", "quiz_intro"))
         for chunk in split_message(response):
-            send_message(chat_id, chunk)
+            await send_message(session, chat_id, chunk)
         
-        send_message(chat_id, get_translated_phrase("English", "post_quiz_prompt"))
+        await send_message(session, chat_id, get_translated_phrase("English", "post_quiz_prompt"))
         user_state[chat_id]["step"] = STATE_POST_QUIZ
     else:
-        send_message(chat_id, get_translated_phrase("English", "quiz_error"))
+        await send_message(session, chat_id, get_translated_phrase("English", "quiz_error"))
         user_state.pop(chat_id, None)
 
 
 # -------------------- Routes --------------------
 
-@app.route("/")
-def home():
+async def home(request):
     """A simple home route to check if the bot is running."""
-    return "🚀 Edgo Telegram bot is running!"
+    return web.Response(text="🚀 Edgo Telegram bot is running!")
 
-@app.route("/webhook", methods=["POST"])
-def telegram_webhook():
+async def telegram_webhook(request):
     """Handles all incoming messages from Telegram."""
     try:
-        data = request.get_json()
+        data = await request.json()
         logging.info("📩 Incoming message: %s", json.dumps(data, indent=2))
 
         if not data or "message" not in data or "text" not in data["message"]:
             logging.warning("Received invalid message data.")
-            return "ok"
+            return web.Response(text="ok")
 
         chat_id = data["message"]["chat"]["id"]
         incoming_msg = data["message"]["text"].strip()
         state = user_state.get(chat_id, {})
 
-        handle_message(chat_id, incoming_msg, state, user_state)
+        async with ClientSession() as session:
+            await handle_message(session, chat_id, incoming_msg, state, user_state)
 
     except Exception as e:
         logging.error("An error occurred during webhook processing: %s", e, exc_info=True)
-        send_message(chat_id, get_translated_phrase("English", "unknown_error"))
+        # Note: We need a new session to send the error message
+        async with ClientSession() as session:
+            await send_message(session, chat_id, get_translated_phrase("English", "unknown_error"))
 
-    return "ok"
+    return web.Response(text="ok")
 
 
 # -------------------- Startup --------------------
@@ -477,5 +470,8 @@ if __name__ == "__main__":
     else:
         logging.error("WEBHOOK_URL environment variable is not set. Webhook will not be configured.")
 
+    app = web.Application()
+    app.router.add_get("/", home)
+    app.router.add_post("/webhook", telegram_webhook)
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    web.run_app(app, host="0.0.0.0", port=port)
