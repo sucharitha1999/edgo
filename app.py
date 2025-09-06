@@ -1,10 +1,16 @@
-# app.py
-# The main application file for the Telegram bot, with all functions consolidated.
-
-# To resolve the 'reportlab' error, make sure you have a requirements.txt file
-# in your project's root directory that includes the following lines:
+# app.py (improved)
+# Telegram education chatbot — fixes for state persistence, duplicate status message,
+# robust translation + fonts fallback, larger message chunks, safer webhook error handling,
+# request timeouts, and cleaner structure.
+#
+# Requirements (add to requirements.txt):
+# flask
+# python-dotenv
+# requests
 # reportlab
-# googletrans
+# googletrans==4.0.0rc1
+#
+# Optional (no external service required): none — state uses local SQLite file.
 
 from flask import Flask, request
 from dotenv import load_dotenv
@@ -13,6 +19,8 @@ import json
 import logging
 import requests
 import time
+import threading
+import sqlite3
 from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -21,25 +29,32 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from googletrans import Translator
 
-# Set up logging for better debugging
+# -------------------- Logging --------------------
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
+# -------------------- App & Env --------------------
 app = Flask(__name__)
-
 load_dotenv()
 
-# Global state for managing conversations
-user_state = {}
+# Load API keys from environment variables (validate early)
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 
-# Load API keys from environment variables
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not TELEGRAM_TOKEN:
+    logger.error("TELEGRAM_TOKEN is missing. Set it in your environment.")
+if not GEMINI_API_KEY:
+    logger.error("GEMINI_API_KEY is missing. Set it in your environment.")
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent"
+GEMINI_API_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.5-flash-preview-05-20:generateContent"
+)
 
-# Constants for conversation states
+# -------------------- Conversation States --------------------
 STATE_MENU = "menu"
 STATE_LEARN_TOPIC = "learn_topic"
 STATE_MCQ_TOPIC = "mcq_topic"
@@ -48,9 +63,12 @@ STATE_MCQ_LANGUAGE_SELECTION = "mcq_language_selection"
 STATE_POST_LEARN = "post_learn"
 STATE_POST_QUIZ = "post_quiz"
 
-# Static phrases to be translated
+# -------------------- Phrases --------------------
 PHRASES = {
-    "welcome": "Hi! 👋 What would you like help with today?\n\n*Reply with a number:*\n1️⃣ Learn about a topic\n2️⃣ Test your knowledge with MCQs",
+    "welcome": (
+        "Hi! 👋 What would you like help with today?\n\n*Reply with a number:*\n"
+        "1️⃣ Learn about a topic\n2️⃣ Test your knowledge with MCQs"
+    ),
     "learn_prompt": "📚 What topic would you like to learn about?",
     "mcq_prompt": "📝 What topic would you like a quiz on?",
     "language_prompt": "Great choice! Now, please tell me the language you want to learn in (e.g., English, Hindi, Spanish).",
@@ -72,186 +90,233 @@ PHRASES = {
     "quiz_word": "quiz",
     "yes_word": "yes",
     "end_conversation": "Okay, let me know if you need anything else! 😊",
-    "pdf_font_error": "❌ I couldn't generate the PDF because the required font file for your language could not be found. Please ensure you have a font file that supports your language (e.g., 'NotoSans-Regular.ttf') in the same directory as the bot script."
+    "pdf_font_error": (
+        "❌ I couldn't find a compatible font for PDF in your chosen language. "
+        "Sending a basic PDF that may not render all characters perfectly."
+    )
 }
 
-# Initialize a global translator instance
+# -------------------- Translation & Fonts --------------------
 translator = Translator()
 
-# Map language names to their respective font file paths
-# NOTE: The font files must be available in these exact locations.
+# Map human-readable names to language codes expected by googletrans
+LANG_CODE_MAP = {
+    'english': 'en', 'hindi': 'hi', 'telugu': 'te', 'kannada': 'kn', 'tamil': 'ta',
+    'marathi': 'mr', 'malayalam': 'ml', 'spanish': 'es', 'french': 'fr', 'german': 'de'
+}
+
+# Map language names to font file paths (optional fonts). If not found, we fallback safely.
 FONT_MAP = {
     'Hindi': 'languages/NotoSansHindi.ttf',
     'Telugu': 'languages/NotoSansTelugu.ttf',
     'Kannada': 'languages/NotoSansKannada.ttf',
     'Tamil': 'languages/NotoSansTamil.ttf',
     'Marathi': 'languages/NotoSansHindi.ttf',
-    'Malayalam': 'languages/NotoSansMalyalam.ttf'
+    'Malayalam': 'languages/NotoSansMalayalam.ttf'  # fixed spelling
 }
 
-# -------------------- API Client Functions --------------------
+# -------------------- SQLite State Store --------------------
+DB_PATH = os.getenv("STATE_DB_PATH", "state.db")
 
-def send_message(chat_id, text, parse_mode="Markdown"):
-    """Sends a message to a specific Telegram chat ID."""
+def _init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS user_state (chat_id TEXT PRIMARY KEY, state_json TEXT NOT NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+_init_db()
+
+def load_state(chat_id: str) -> dict:
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT state_json FROM user_state WHERE chat_id=?", (str(chat_id),))
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return {}
+    return {}
+
+def save_state(chat_id: str, state: dict):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "REPLACE INTO user_state (chat_id, state_json) VALUES (?, ?)",
+        (str(chat_id), json.dumps(state))
+    )
+    conn.commit()
+    conn.close()
+
+def clear_state(chat_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM user_state WHERE chat_id=?", (str(chat_id),))
+    conn.commit()
+    conn.close()
+
+# -------------------- Telegram Helpers --------------------
+DEFAULT_PARSE_MODE = "Markdown"  # keep Markdown; Gemini outputs Markdown already
+
+REQUEST_TIMEOUT = (8, 30)  # (connect, read) seconds
+
+def send_message(chat_id, text, parse_mode=DEFAULT_PARSE_MODE):
     url = f"{TELEGRAM_API_URL}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
-        logging.info("✅ Message sent successfully to chat ID: %s", chat_id)
+        logger.info("✅ Message sent to %s", chat_id)
     except requests.exceptions.RequestException as e:
-        logging.error("❌ Failed to send message to Telegram: %s", e)
+        logger.error("❌ Failed to send message: %s", e)
+
 
 def send_document(chat_id, file_data, filename, caption=None):
-    """Sends a document (e.g., PDF) to a specific Telegram chat ID."""
     url = f"{TELEGRAM_API_URL}/sendDocument"
-    files = {
-        'document': (filename, file_data, 'application/pdf')
-    }
-    payload = {
-        "chat_id": chat_id,
-        "caption": caption
-    }
+    files = {'document': (filename, file_data, 'application/pdf')}
+    payload = {"chat_id": chat_id}
+    if caption:
+        payload["caption"] = caption
     try:
-        response = requests.post(url, data=payload, files=files)
+        response = requests.post(url, data=payload, files=files, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
-        logging.info("✅ Document sent successfully to chat ID: %s", chat_id)
+        logger.info("✅ Document sent to %s", chat_id)
     except requests.exceptions.RequestException as e:
-        logging.error("❌ Failed to send document to Telegram: %s", e)
+        logger.error("❌ Failed to send document: %s", e)
 
-def call_gemini(prompt):
-    """
-    Calls the Gemini API with exponential backoff for retries.
-    Returns the generated text or None on failure.
-    """
-    try:
-        payload = {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}]
-        }
-        headers = {"Content-Type": "application/json"}
-        
-        retries = 0
-        max_retries = 3
-        while retries < max_retries:
-            response = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, data=json.dumps(payload))
-            if response.status_code == 429:  # Too Many Requests
-                delay = 2**retries
-                logging.warning("Rate limit exceeded. Retrying in %d seconds...", delay)
+# -------------------- Gemini Client --------------------
+
+def call_gemini(prompt: str) -> str | None:
+    payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
+    headers = {"Content-Type": "application/json"}
+    retries = 0
+    max_retries = 3
+    backoff = 2
+    while retries <= max_retries:
+        try:
+            resp = requests.post(
+                f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+                headers=headers,
+                data=json.dumps(payload),
+                timeout=REQUEST_TIMEOUT,
+            )
+            if resp.status_code == 429:
+                delay = backoff ** retries
+                logger.warning("Gemini rate-limited. Retry in %s s", delay)
                 time.sleep(delay)
                 retries += 1
-            else:
-                response.raise_for_status()
-                break
-
-        if retries == max_retries:
-            logging.error("❌ Max retries reached. Giving up.")
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            cand = (
+                data.get("candidates", [{}])[0]
+                .get("content", {})
+                .get("parts", [{}])[0]
+                .get("text")
+            )
+            return cand.strip() if cand else None
+        except requests.exceptions.RequestException as e:
+            logger.error("Gemini API error: %s", e)
+            retries += 1
+            time.sleep(1.5 * retries)
+        except Exception as e:
+            logger.exception("Unexpected Gemini error: %s", e)
             return None
+    return None
 
-        result = response.json()
-        if "candidates" in result and len(result["candidates"]) > 0 and \
-           "content" in result["candidates"][0] and "parts" in result["candidates"][0]["content"] and \
-           len(result["candidates"][0]["content"]["parts"]) > 0:
-            return result["candidates"][0]["content"]["parts"][0]["text"].strip()
-        else:
-            logging.error("❌ Gemini API response was not in the expected format: %s", result)
-            return None
-    except Exception as e:
-        logging.error("❌ Gemini API error: %s", e, exc_info=True)
-        return None
+# -------------------- Utilities --------------------
+
+def normalize_language_name(name: str) -> tuple[str, str]:
+    # returns (DisplayName, lang_code)
+    if not name:
+        return ("English", "en")
+    key = name.strip().lower()
+    code = LANG_CODE_MAP.get(key, 'en')
+    display = key.capitalize()
+    return (display if display else "English", code)
 
 
-# -------------------- Utility Functions --------------------
-
-def get_translated_phrase(language, key):
-    """
-    Translates a key's phrase to the specified language.
-    If translation fails or is for English, returns the original phrase.
-    """
+def get_translated_phrase(language: str, key: str) -> str:
     phrase = PHRASES.get(key, "")
     if not phrase or language.lower() == "english":
         return phrase
-    
     try:
-        translated = translator.translate(phrase, dest=language).text
+        _, lang_code = normalize_language_name(language)
+        translated = translator.translate(phrase, dest=lang_code).text
         return translated
     except Exception as e:
-        logging.error(f"Translation failed for '{phrase}' to '{language}': {e}")
+        logger.error("Translation failed for '%s' to '%s': %s", phrase, language, e)
         return phrase
 
-def set_webhook():
-    """Sets the Telegram webhook for the bot."""
-    webhook_url = os.getenv("WEBHOOK_URL")
-    url = f"{TELEGRAM_API_URL}/setWebhook?url={webhook_url}"
-    try:
-        res = requests.get(url)
-        res.raise_for_status()
-        logging.info("🔗 Webhook set successfully: %s", res.json())
-    except requests.exceptions.RequestException as e:
-        logging.error("❌ Failed to set webhook: %s", e)
 
-def split_message(text, chunk_size=1400):
-    """
-    Splits a long message into smaller chunks for Telegram, ensuring words are
-    not broken across chunks.
-    """
+def set_webhook():
+    if not WEBHOOK_URL:
+        logger.error("WEBHOOK_URL not set; skipping webhook setup.")
+        return
+    url = f"{TELEGRAM_API_URL}/setWebhook?url={WEBHOOK_URL}"
+    try:
+        res = requests.get(url, timeout=REQUEST_TIMEOUT)
+        res.raise_for_status()
+        logger.info("🔗 Webhook set: %s", res.json())
+    except requests.exceptions.RequestException as e:
+        logger.error("❌ Failed to set webhook: %s", e)
+
+
+def split_message(text: str, chunk_size: int = 3500) -> list[str]:
     parts = []
     start = 0
-    while start < len(text):
-        end = min(start + chunk_size, len(text))
-        if end < len(text) and text[end] not in (' ', '\n', '\t'):
+    n = len(text)
+    while start < n:
+        end = min(start + chunk_size, n)
+        if end < n and text[end] not in (' ', '\n', '\t'):
             last_space = text.rfind(' ', start, end)
             if last_space != -1:
                 end = last_space
-            else:
-                pass
-        
         chunk = text[start:end].strip()
         if chunk:
             parts.append(chunk)
         start = end
-        
     return parts
 
-def format_bullet_points(text):
-    """
-    Ensures bullet points are consistently formatted with a hyphen for better
-    display on different chat clients.
-    """
+
+def format_bullet_points(text: str) -> str:
     lines = text.split('\n')
-    formatted_lines = []
+    formatted = []
     for line in lines:
         if line.strip().startswith('* '):
-            formatted_lines.append('➤ ' + line.strip()[2:])
+            formatted.append('➤ ' + line.strip()[2:])
         else:
-            formatted_lines.append(line)
-    return '\n'.join(formatted_lines)
+            formatted.append(line)
+    return '\n'.join(formatted)
 
-def create_pdf_notes(title, content, language):
-    """
-    Generates a PDF file from the provided title and content, using a
-    language-specific font for correct rendering.
-    Returns the file data as a BytesIO object.
-    """
+
+def create_pdf_notes(title: str, content: str, language: str) -> BytesIO | None:
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
     styles = getSampleStyleSheet()
     story = []
 
-    # Get the correct font file path based on the user's selected language
-    font_path = FONT_MAP.get(language, 'Vera.ttf')  # Fallback to Vera.ttf if language not mapped
-    font_name = 'UnicodeFont' # A generic name for the registered font
+    font_path = FONT_MAP.get(language)
+    font_name = 'UnicodeFont'
 
-    try:
-        pdfmetrics.registerFont(TTFont(font_name, font_path))
-        styles['Normal'].fontName = font_name
-        styles['Heading1'].fontName = font_name
-    except Exception as e:
-        logging.error(f"Failed to find or load font file '{font_path}'. Error: {e}")
-        return None
+    font_loaded = False
+    if font_path and os.path.exists(font_path):
+        try:
+            pdfmetrics.registerFont(TTFont(font_name, font_path))
+            styles['Normal'].fontName = font_name
+            styles['Heading1'].fontName = font_name
+            font_loaded = True
+        except Exception as e:
+            logger.error("Failed to load font '%s': %s", font_path, e)
+
+    # If language is non-English and font not loaded, we still proceed with a warning
+    if language.lower() != 'english' and not font_loaded:
+        logger.warning("Font for language '%s' not found. Falling back to default.", language)
 
     story.append(Paragraph(f"<b>{title}</b>", styles['Heading1']))
     story.append(Spacer(1, 12))
-    
+
     pdf_content = content.replace('* ', '\n\u2022 ').replace('**', '')
     for line in pdf_content.split('\n'):
         story.append(Paragraph(line, styles['Normal']))
@@ -261,76 +326,94 @@ def create_pdf_notes(title, content, language):
     buffer.seek(0)
     return buffer
 
+# -------------------- Conversation Handlers --------------------
 
-# -------------------- Handler Functions --------------------
+def handle_message(chat_id: str, incoming_msg: str, state: dict):
+    text = incoming_msg.strip()
 
-def handle_message(chat_id, incoming_msg, state, user_state):
-    """
-    Main handler function that routes messages based on the user's state.
-    """
-    if incoming_msg.lower() == "hi edgo":
+    if text.lower() == "hi edgo":
         send_message(chat_id, get_translated_phrase("English", "welcome"))
-        user_state[chat_id] = {"step": STATE_MENU}
+        new_state = {"step": STATE_MENU}
+        save_state(chat_id, new_state)
         return
 
-    if state.get("step") == STATE_MENU:
-        handle_menu_selection(chat_id, incoming_msg, user_state)
+    step = state.get("step")
+
+    if step == STATE_MENU:
+        handle_menu_selection(chat_id, text)
         return
 
-    if state.get("step") == STATE_LEARN_TOPIC:
-        user_state[chat_id]["topic"] = incoming_msg.strip()
+    if step == STATE_LEARN_TOPIC:
+        state["topic"] = text
         send_message(chat_id, get_translated_phrase("English", "language_prompt"))
-        user_state[chat_id]["step"] = STATE_LEARN_LANGUAGE_SELECTION
-        return
-        
-    elif state.get("step") == STATE_LEARN_LANGUAGE_SELECTION:
-        language = incoming_msg.strip().capitalize()
-        user_state[chat_id]["language"] = language
-        handle_learn_topic_request(chat_id, user_state, state)
-        return
-    
-    elif state.get("step") == STATE_POST_LEARN:
-        handle_post_learn_request(chat_id, incoming_msg, user_state, state)
+        state["step"] = STATE_LEARN_LANGUAGE_SELECTION
+        save_state(chat_id, state)
         return
 
-    elif state.get("step") == STATE_POST_QUIZ:
-        handle_post_quiz_request(chat_id, incoming_msg, user_state, state)
+    if step == STATE_LEARN_LANGUAGE_SELECTION:
+        lang_display, _ = normalize_language_name(text)
+        state["language"] = lang_display
+        save_state(chat_id, state)
+        # Prevent duplicate processing if Gemini is already running
+        if state.get("processing"):
+            logger.info("Duplicate learn request ignored (already processing).")
+            return
+        state["processing"] = True
+        save_state(chat_id, state)
+        send_message(chat_id, get_translated_phrase("English", "search_message"))
+        threading.Thread(target=_process_learn_topic, args=(chat_id,), daemon=True).start()
         return
 
-    elif state.get("step") == STATE_MCQ_TOPIC:
-        user_state[chat_id]["topic"] = incoming_msg.strip()
+    if step == STATE_POST_LEARN:
+        handle_post_learn_request(chat_id, text, state)
+        return
+
+    if step == STATE_POST_QUIZ:
+        handle_post_quiz_request(chat_id, text, state)
+        return
+
+    if step == STATE_MCQ_TOPIC:
+        state["topic"] = text
         send_message(chat_id, get_translated_phrase("English", "language_prompt"))
-        user_state[chat_id]["step"] = STATE_MCQ_LANGUAGE_SELECTION
+        state["step"] = STATE_MCQ_LANGUAGE_SELECTION
+        save_state(chat_id, state)
         return
 
-    elif state.get("step") == STATE_MCQ_LANGUAGE_SELECTION:
-        language = incoming_msg.strip().capitalize()
-        user_state[chat_id]["language"] = language
-        handle_mcq_request(chat_id, user_state, state)
+    if step == STATE_MCQ_LANGUAGE_SELECTION:
+        lang_display, _ = normalize_language_name(text)
+        state["language"] = lang_display
+        save_state(chat_id, state)
+        if state.get("processing"):
+            logger.info("Duplicate quiz request ignored (already processing).")
+            return
+        state["processing"] = True
+        save_state(chat_id, state)
+        send_message(chat_id, get_translated_phrase("English", "quiz_message").format(state.get("topic", "")))
+        threading.Thread(target=_process_mcq, args=(chat_id,), daemon=True).start()
         return
 
-    else:
-        send_message(chat_id, get_translated_phrase("English", "unknown_command"))
+    send_message(chat_id, get_translated_phrase("English", "unknown_command"))
 
-def handle_menu_selection(chat_id, incoming_msg, user_state):
-    """Handles the user's choice from the main menu."""
+
+def handle_menu_selection(chat_id: str, incoming_msg: str):
     if incoming_msg == "1":
-        user_state[chat_id]["step"] = STATE_LEARN_TOPIC
+        state = {"step": STATE_LEARN_TOPIC}
+        save_state(chat_id, state)
         send_message(chat_id, get_translated_phrase("English", "learn_prompt"))
     elif incoming_msg == "2":
-        user_state[chat_id]["step"] = STATE_MCQ_TOPIC
+        state = {"step": STATE_MCQ_TOPIC}
+        save_state(chat_id, state)
         send_message(chat_id, get_translated_phrase("English", "mcq_prompt"))
     else:
         send_message(chat_id, get_translated_phrase("English", "invalid_option"))
 
-def handle_learn_topic_request(chat_id, user_state, state):
-    """
-    Generates a detailed explanation with external resources
-    and prompts the user for a downloadable file.
-    """
+# ---- Background processors to avoid webhook timeouts & duplicate status lines ----
+
+def _process_learn_topic(chat_id: str):
+    state = load_state(chat_id)
     topic = state.get("topic")
     language = state.get("language", "English")
-    
+
     prompt = (
         f"Act as a friendly and knowledgeable tutor for all educational topics. "
         f"Your goal is to simplify and explain the following topic for a student in a simple and clear manner:\n\n"
@@ -340,81 +423,28 @@ def handle_learn_topic_request(chat_id, user_state, state):
         f"1. **Explore More** with links to relevant websites for deeper learning.\n"
         f"2. **Watch and Learn** with links to relevant YouTube videos."
     )
-    
-    send_message(chat_id, get_translated_phrase("English", "search_message"))
+
     response = call_gemini(prompt)
-    
+
     if response:
         state["full_notes"] = response
-        formatted_response = format_bullet_points(response)
+        formatted = format_bullet_points(response)
         send_message(chat_id, get_translated_phrase("English", "notes_intro").format(topic))
-        for chunk in split_message(formatted_response):
+        for chunk in split_message(formatted):
             send_message(chat_id, chunk)
-
         send_message(chat_id, get_translated_phrase("English", "post_learn_prompt"))
-        user_state[chat_id]["step"] = STATE_POST_LEARN
+        state["step"] = STATE_POST_LEARN
     else:
         send_message(chat_id, get_translated_phrase("English", "fetch_error"))
-        user_state.pop(chat_id, None)
+        # Reset to menu for smoother UX
+        state = {"step": STATE_MENU}
 
-def handle_post_learn_request(chat_id, incoming_msg, user_state, state):
-    """Handles the user's request for either a PDF or an MCQ quiz."""
-    language = state.get("language", "English")
-    
-    # Check for translated versions of "PDF" and "Quiz"
-    pdf_word = get_translated_phrase(language, "pdf_word").lower()
-    quiz_word = get_translated_phrase(language, "quiz_word").lower()
-    
-    if incoming_msg.lower() == pdf_word:
-        notes_text = state.get("full_notes", "")
-        topic = state.get("topic", "notes")
-        
-        if notes_text:
-            send_message(chat_id, get_translated_phrase("English", "download_success"))
-            pdf_data = create_pdf_notes(topic, notes_text, language)
-            if pdf_data:
-                send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
-                              caption=get_translated_phrase("English", "document_caption").format(topic))
-            else:
-                send_message(chat_id, get_translated_phrase("English", "pdf_font_error"))
-        else:
-            send_message(chat_id, get_translated_phrase("English", "no_notes"))
-        
-        user_state.pop(chat_id, None)
+    state.pop("processing", None)
+    save_state(chat_id, state)
 
-    elif incoming_msg.lower() == quiz_word:
-        handle_mcq_request(chat_id, user_state, state)
 
-    else:
-        send_message(chat_id, "Please reply with 'PDF' or 'Quiz'.")
-        user_state.pop(chat_id, None)
-
-def handle_post_quiz_request(chat_id, incoming_msg, user_state, state):
-    """Handles the user's request for a PDF after completing the quiz."""
-    language = state.get("language", "English")
-    yes_word = get_translated_phrase(language, "yes_word").lower()
-
-    if incoming_msg.lower() == yes_word:
-        notes_text = state.get("full_notes", "")
-        topic = state.get("topic", "notes")
-        
-        if notes_text:
-            send_message(chat_id, get_translated_phrase("English", "download_success"))
-            pdf_data = create_pdf_notes(topic, notes_text, language)
-            if pdf_data:
-                send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
-                              caption=get_translated_phrase("English", "document_caption").format(topic))
-            else:
-                send_message(chat_id, get_translated_phrase("English", "pdf_font_error"))
-        else:
-            send_message(chat_id, get_translated_phrase("English", "no_notes"))
-    else:
-        send_message(chat_id, get_translated_phrase("English", "end_conversation"))
-    
-    user_state.pop(chat_id, None)
-
-def handle_mcq_request(chat_id, user_state, state):
-    """Generates insightful MCQs and sends the solution, then prompts for PDF."""
+def _process_mcq(chat_id: str):
+    state = load_state(chat_id)
     topic = state.get("topic")
     language = state.get("language", "English")
 
@@ -424,58 +454,141 @@ def handle_mcq_request(chat_id, user_state, state):
         f"Directly after each question, provide the correct answer and a brief, 1-2 line explanation of why it is correct.\n"
         f"Use Markdown to format the questions and answers clearly."
     )
-    send_message(chat_id, get_translated_phrase("English", "quiz_message").format(topic))
+
     response = call_gemini(prompt)
+
     if response:
         send_message(chat_id, get_translated_phrase("English", "quiz_intro"))
         for chunk in split_message(response):
             send_message(chat_id, chunk)
-        
         send_message(chat_id, get_translated_phrase("English", "post_quiz_prompt"))
-        user_state[chat_id]["step"] = STATE_POST_QUIZ
+        state["step"] = STATE_POST_QUIZ
     else:
         send_message(chat_id, get_translated_phrase("English", "quiz_error"))
-        user_state.pop(chat_id, None)
+        state = {"step": STATE_MENU}
 
+    state.pop("processing", None)
+    save_state(chat_id, state)
+
+
+def handle_post_learn_request(chat_id: str, incoming_msg: str, state: dict):
+    language = state.get("language", "English")
+
+    pdf_word = get_translated_phrase(language, "pdf_word").lower()
+    quiz_word = get_translated_phrase(language, "quiz_word").lower()
+
+    lower = incoming_msg.lower()
+    if lower == pdf_word:
+        notes_text = state.get("full_notes", "")
+        topic = state.get("topic", "notes")
+        if notes_text:
+            # If non-English and no font, warn but still send basic PDF
+            if language.lower() != 'english':
+                # Check if our font exists; if not, notify politely
+                font_path = FONT_MAP.get(language)
+                if not (font_path and os.path.exists(font_path)):
+                    send_message(chat_id, get_translated_phrase("English", "pdf_font_error"))
+            send_message(chat_id, get_translated_phrase("English", "download_success"))
+            pdf_data = create_pdf_notes(topic, notes_text, language)
+            if pdf_data:
+                send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
+                              caption=get_translated_phrase("English", "document_caption").format(topic))
+            else:
+                send_message(chat_id, get_translated_phrase("English", "no_notes"))
+        else:
+            send_message(chat_id, get_translated_phrase("English", "no_notes"))
+        clear_state(chat_id)
+        save_state(chat_id, {"step": STATE_MENU})
+        return
+
+    if lower == quiz_word:
+        # switch to quiz generation flow
+        state["step"] = STATE_MCQ_LANGUAGE_SELECTION
+        save_state(chat_id, state)
+        # directly trigger the MCQ worker (avoid extra status duplication)
+        if state.get("processing"):
+            return
+        state["processing"] = True
+        save_state(chat_id, state)
+        send_message(chat_id, get_translated_phrase("English", "quiz_message").format(state.get("topic", "")))
+        threading.Thread(target=_process_mcq, args=(chat_id,), daemon=True).start()
+        return
+
+    send_message(chat_id, "Please reply with 'PDF' or 'Quiz'.")
+    # keep them in POST_LEARN state for retry
+    save_state(chat_id, state)
+
+
+def handle_post_quiz_request(chat_id: str, incoming_msg: str, state: dict):
+    language = state.get("language", "English")
+    yes_word = get_translated_phrase(language, "yes_word").lower()
+
+    if incoming_msg.lower() == yes_word:
+        notes_text = state.get("full_notes", "")
+        topic = state.get("topic", "notes")
+        if notes_text:
+            if language.lower() != 'english':
+                font_path = FONT_MAP.get(language)
+                if not (font_path and os.path.exists(font_path)):
+                    send_message(chat_id, get_translated_phrase("English", "pdf_font_error"))
+            send_message(chat_id, get_translated_phrase("English", "download_success"))
+            pdf_data = create_pdf_notes(topic, notes_text, language)
+            if pdf_data:
+                send_document(chat_id, pdf_data, f"{topic.replace(' ', '_')}_notes.pdf",
+                              caption=get_translated_phrase("English", "document_caption").format(topic))
+            else:
+                send_message(chat_id, get_translated_phrase("English", "no_notes"))
+        else:
+            send_message(chat_id, get_translated_phrase("English", "no_notes"))
+    else:
+        send_message(chat_id, get_translated_phrase("English", "end_conversation"))
+
+    clear_state(chat_id)
+    save_state(chat_id, {"step": STATE_MENU})
 
 # -------------------- Routes --------------------
 
 @app.route("/")
 def home():
-    """A simple home route to check if the bot is running."""
     return "🚀 Edgo Telegram bot is running!"
 
-@app.route("/webhook", methods=["POST"])
+@app.route("/webhook", methods=["POST"]) 
 def telegram_webhook():
-    """Handles all incoming messages from Telegram."""
+    chat_id = None
     try:
-        data = request.get_json()
-        logging.info("📩 Incoming message: %s", json.dumps(data, indent=2))
+        data = request.get_json(force=True, silent=True) or {}
+        logger.info("📩 Incoming: %s", json.dumps(data, indent=2))
 
-        if not data or "message" not in data or "text" not in data["message"]:
-            logging.warning("Received invalid message data.")
+        message = data.get("message", {})
+        chat = message.get("chat", {})
+        chat_id = chat.get("id")
+        text = message.get("text")
+
+        if not chat_id or not isinstance(text, str):
+            logger.warning("Invalid update payload; no chat_id or text.")
             return "ok"
 
-        chat_id = data["message"]["chat"]["id"]
-        incoming_msg = data["message"]["text"].strip()
-        state = user_state.get(chat_id, {})
+        # Load current state from SQLite
+        state = load_state(chat_id)
+        if not state:
+            state = {"step": STATE_MENU}
+            save_state(chat_id, state)
 
-        handle_message(chat_id, incoming_msg, state, user_state)
+        handle_message(chat_id, text, state)
 
     except Exception as e:
-        logging.error("An error occurred during webhook processing: %s", e, exc_info=True)
-        send_message(chat_id, get_translated_phrase("English", "unknown_error"))
-
+        logger.exception("Webhook processing error: %s", e)
+        if chat_id:
+            send_message(chat_id, get_translated_phrase("English", "unknown_error"))
     return "ok"
-
 
 # -------------------- Startup --------------------
 
 if __name__ == "__main__":
-    if os.getenv("WEBHOOK_URL"):
+    if WEBHOOK_URL:
         set_webhook()
     else:
-        logging.error("WEBHOOK_URL environment variable is not set. Webhook will not be configured.")
+        logger.warning("WEBHOOK_URL not set. Configure it to receive Telegram updates.")
 
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port) 
